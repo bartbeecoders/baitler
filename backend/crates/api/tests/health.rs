@@ -220,13 +220,21 @@ async fn migrations_are_idempotent() {
         .await
         .expect("query _migration");
     let names: Vec<String> = applied.take(0).expect("take names");
+    // Idempotent: each migration is recorded exactly once regardless of how many exist.
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
     assert_eq!(
+        unique.len(),
         names.len(),
-        2,
-        "expected exactly two recorded migrations (no duplicates), got {names:?}"
+        "duplicate migration records: {names:?}"
     );
-    assert!(names.iter().any(|n| n.contains("0001_init")));
-    assert!(names.iter().any(|n| n.contains("0002_files")));
+    for expected in ["0001_init", "0002_files", "0003_ideas"] {
+        assert!(
+            names.iter().any(|n| n.contains(expected)),
+            "missing migration {expected}: {names:?}"
+        );
+    }
 
     let mut meta = state
         .db

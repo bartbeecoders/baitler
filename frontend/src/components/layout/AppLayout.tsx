@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { Spinner } from '@/components/ui/spinner';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 
@@ -101,7 +102,15 @@ export function AppLayout() {
         <Header onMenuClick={openDrawer} />
         <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
           <ErrorBoundary>
-            <Outlet />
+            <Suspense
+              fallback={
+                <div className="grid place-items-center py-16">
+                  <Spinner label="Loading" />
+                </div>
+              }
+            >
+              <Outlet />
+            </Suspense>
           </ErrorBoundary>
         </main>
       </div>

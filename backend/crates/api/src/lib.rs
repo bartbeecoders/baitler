@@ -10,6 +10,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod files;
+pub mod ideas;
 pub mod migrations;
 pub mod owner;
 pub mod routes;

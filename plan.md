@@ -118,11 +118,16 @@ Goal: upload, browse, organize, download files.
 
 Goal: capture, tag, link, and organize ideas/notes.
 
-- [ ] **5.1** `Idea`/`Note` schema (title, body in Markdown, tags, links, status, timestamps); leverage SurrealDB graph relations for linking.
-- [ ] **5.2** CRUD endpoints + full-text/tag search and filtering.
-- [ ] **5.3** Frontend: idea list/board (list + kanban/graph views), tag management, linking between ideas.
-- [ ] **5.4** Markdown editing/preview in the idea editor (shared with Phase 7 editor stack).
-- [ ] **5.5** Tests for CRUD, tagging, and relations.
+- [x] **5.1** `idea` table (migration `0003`): title, Markdown `body`, `tags[]`, `status`, `links[]` (undirected uuid refs), timestamps; owner + status indexes. (Links via a uuid array kept symmetric by the app, not graph edges — pragmatic for the uuid-public-id model.)
+- [x] **5.2** Owner-scoped CRUD; list filtered by status/tag + case-insensitive title/body search + pagination; distinct-tags endpoint; symmetric link/unlink with link-scrub on delete; detail resolves related ideas. Title/status/tags validated.
+- [x] **5.3** Frontend: Ideas page with **list + board** (by status) views, search + status + tag filters; editor modal with tag chips, status, and **linked-ideas** management (add via search picker, unlink). Route is code-split (lazy).
+- [x] **5.4** Reusable `MarkdownEditor` (Write/Preview tabs, `react-markdown` + GFM, XSS-safe) + `prose` styling via `@tailwindcss/typography`; shared with the Phase 7 document editor.
+- [x] **5.5** Tests: **5 backend** integration (CRUD, filters/search, tags, symmetric link/unlink + delete-scrub, validation, repo-level owner isolation) + **30 frontend** (incl. IdeasPage list/board + MarkdownEditor).
+
+> Verified green: backend `build`/`clippy -D warnings`/`test` (35)/`fmt` + live curl
+> (create→filter→search→tags→link→detail→delete-scrub); frontend `tsc`/`eslint`/`vitest`
+> (30)/`build` + live screenshot of the Ideas page. Bundle code-split so the Markdown
+> libs load only with the Ideas route. Adversarial review workflow not run (offer pending).
 
 ## Phase 6 — LLM provider abstraction & AI integration
 

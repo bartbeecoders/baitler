@@ -36,9 +36,9 @@ describe('App routing', () => {
     expect(screen.getByRole('heading', { name: /welcome to baitler/i })).toBeInTheDocument();
   });
 
-  it('renders a feature placeholder at /files', () => {
+  it('renders the files page at /files (lazy-loaded)', async () => {
     renderAt('/files');
-    expect(screen.getByRole('heading', { name: 'Files' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Files' })).toBeInTheDocument();
   });
 
   it('renders NotFound for an unknown route', () => {
