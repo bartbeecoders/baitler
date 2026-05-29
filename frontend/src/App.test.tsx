@@ -11,8 +11,12 @@ vi.mock('@/lib/api', () => ({
   apiFetch: vi.fn(async (path: string) => {
     if (path === '/health') return { status: 'ok', db: 'up' };
     if (path === '/version') return { name: 'baitler-api', version: '0.1.0', git_sha: null };
+    if (path.startsWith('/files')) {
+      return { folder: null, breadcrumbs: [], folders: [], files: [] };
+    }
     throw new Error(`unexpected path: ${path}`);
   }),
+  apiFetchBlob: vi.fn(async () => new Blob()),
 }));
 
 function renderAt(path: string) {

@@ -52,6 +52,19 @@ pub struct Config {
     pub db_timeout: Duration,
     /// SurrealDB connection settings.
     pub surreal: SurrealConfig,
+    /// File storage settings.
+    pub storage: StorageConfig,
+}
+
+/// File storage settings.
+#[derive(Debug, Clone)]
+pub struct StorageConfig {
+    /// Backend kind: `local` (only option in Phase 4; S3 comes later).
+    pub backend: String,
+    /// Filesystem root for the `local` backend.
+    pub local_path: String,
+    /// Maximum accepted upload size, in bytes.
+    pub max_upload_bytes: usize,
 }
 
 /// SurrealDB connection settings.
@@ -139,11 +152,25 @@ impl Config {
             database: env::var("SURREAL_DB").unwrap_or_else(|_| "baitler".to_string()),
         };
 
+        let max_upload_mb: u64 = match env::var("MAX_UPLOAD_MB") {
+            Ok(raw) => raw
+                .parse()
+                .map_err(|e| ConfigError::invalid("MAX_UPLOAD_MB", raw, format!("{e}")))?,
+            Err(_) => 50,
+        };
+        let storage = StorageConfig {
+            backend: env::var("STORAGE_BACKEND").unwrap_or_else(|_| "local".to_string()),
+            local_path: env::var("STORAGE_LOCAL_PATH")
+                .unwrap_or_else(|_| "./data/files".to_string()),
+            max_upload_bytes: (max_upload_mb * 1024 * 1024) as usize,
+        };
+
         Ok(Self {
             bind_addr: SocketAddr::new(host, port),
             cors_allowed_origins,
             db_timeout,
             surreal,
+            storage,
         })
     }
 }

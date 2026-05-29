@@ -15,10 +15,12 @@ use crate::state::AppState;
 /// Build the application router with all routes and middleware applied.
 pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors_allowed_origins);
+    let files = crate::files::routes::router(state.config.storage.max_upload_bytes);
 
     Router::new()
         .route("/health", get(health::health))
         .route("/version", get(health::version))
+        .merge(files)
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

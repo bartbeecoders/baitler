@@ -367,6 +367,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
@@ -404,6 +405,7 @@ dependencies = [
 name = "baitler-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "dotenvy",
  "include_dir",
@@ -413,9 +415,11 @@ dependencies = [
  "surrealdb",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

@@ -9,28 +9,50 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod files;
 pub mod migrations;
+pub mod owner;
 pub mod routes;
 pub mod state;
+pub mod storage;
 pub mod telemetry;
 
 pub use config::Config;
 pub use state::AppState;
 
+use std::sync::Arc;
+
 use axum::Router;
 use tokio::net::TcpListener;
 
-/// Build fully-wired [`AppState`]: connect to the database and apply migrations.
+use crate::config::StorageConfig;
+use crate::storage::{local::LocalStorage, Storage};
+
+/// Build fully-wired [`AppState`]: connect to the database, apply migrations,
+/// and initialize file storage.
 ///
-/// Returns a boxed error so the two distinct failure sources — connecting
-/// ([`surrealdb::Error`]) and migrating ([`migrations::MigrationError`]) — share
-/// one signature.
+/// Returns a boxed error so the distinct failure sources (connecting, migrating,
+/// storage init) share one signature.
 pub async fn build_state(
     config: Config,
 ) -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
     let db = db::connect(&config.surreal).await?;
     migrations::run(&db).await?;
-    Ok(AppState::new(config, db))
+    let storage = build_storage(&config.storage).await?;
+    Ok(AppState::new(config, db, storage))
+}
+
+/// Construct the configured storage backend.
+async fn build_storage(
+    cfg: &StorageConfig,
+) -> Result<Arc<dyn Storage>, Box<dyn std::error::Error + Send + Sync>> {
+    match cfg.backend.as_str() {
+        "local" => {
+            tracing::info!(path = %cfg.local_path, "using local file storage");
+            Ok(Arc::new(LocalStorage::new(&cfg.local_path).await?))
+        }
+        other => Err(format!("unknown STORAGE_BACKEND `{other}` (supported: local)").into()),
+    }
 }
 
 /// Build the application [`Router`] from prepared state.

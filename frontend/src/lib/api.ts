@@ -92,3 +92,30 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
 
   return body as T;
 }
+
+/**
+ * Fetch raw bytes through the credentialed path (so file content keeps working
+ * once cookie auth lands, unlike a bare `<img src>` / `<a href>` cross-origin
+ * subresource). Throws {@link ApiError} on failure, parsing the error envelope.
+ */
+export async function apiFetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { credentials: 'include', ...init });
+  } catch (cause) {
+    throw new ApiError(0, 'network_error', 'Could not reach the server', { cause });
+  }
+  if (!res.ok) {
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch {
+      /* non-JSON error body */
+    }
+    if (isErrorBody(body)) {
+      throw new ApiError(res.status, body.error.code, body.error.message);
+    }
+    throw new ApiError(res.status, 'http_error', res.statusText || 'Request failed');
+  }
+  return res.blob();
+}

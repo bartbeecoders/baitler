@@ -22,6 +22,12 @@ pub enum AppError {
     #[error("{0}")]
     BadRequest(String),
 
+    #[error("{0}")]
+    Conflict(String),
+
+    #[error("{0}")]
+    PayloadTooLarge(String),
+
     #[error("service unavailable: {0}")]
     Unavailable(String),
 
@@ -40,12 +46,25 @@ impl From<surrealdb::Error> for AppError {
     }
 }
 
+impl From<crate::storage::StorageError> for AppError {
+    fn from(err: crate::storage::StorageError) -> Self {
+        use crate::storage::StorageError;
+        match err {
+            StorageError::NotFound => AppError::NotFound,
+            StorageError::InvalidKey => AppError::BadRequest("invalid storage key".to_string()),
+            StorageError::Io(e) => AppError::Internal(Box::new(e)),
+        }
+    }
+}
+
 impl AppError {
     /// The HTTP status this error maps to.
     fn status(&self) -> StatusCode {
         match self {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -56,6 +75,8 @@ impl AppError {
         match self {
             AppError::NotFound => "not_found",
             AppError::BadRequest(_) => "bad_request",
+            AppError::Conflict(_) => "conflict",
+            AppError::PayloadTooLarge(_) => "payload_too_large",
             AppError::Unavailable(_) => "unavailable",
             AppError::Database(_) => "database_error",
             AppError::Internal(_) => "internal_error",

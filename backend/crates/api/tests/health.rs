@@ -8,7 +8,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, SurrealConfig};
+use baitler_api::config::{Config, StorageConfig, SurrealConfig};
 use baitler_api::AppState;
 use reqwest::header::{
     ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
@@ -32,6 +32,14 @@ fn test_config() -> Config {
             password: None,
             namespace: "test".to_string(),
             database: "test".to_string(),
+        },
+        storage: StorageConfig {
+            backend: "local".to_string(),
+            local_path: std::env::temp_dir()
+                .join("baitler-test-files")
+                .to_string_lossy()
+                .into_owned(),
+            max_upload_bytes: 16 * 1024 * 1024,
         },
     }
 }
@@ -214,10 +222,11 @@ async fn migrations_are_idempotent() {
     let names: Vec<String> = applied.take(0).expect("take names");
     assert_eq!(
         names.len(),
-        1,
-        "expected exactly one recorded migration, got {names:?}"
+        2,
+        "expected exactly two recorded migrations (no duplicates), got {names:?}"
     );
-    assert!(names[0].contains("0001_init"));
+    assert!(names.iter().any(|n| n.contains("0001_init")));
+    assert!(names.iter().any(|n| n.contains("0002_files")));
 
     let mut meta = state
         .db

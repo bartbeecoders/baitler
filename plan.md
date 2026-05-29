@@ -96,12 +96,23 @@ Goal: the central hub UI that every feature plugs into.
 
 Goal: upload, browse, organize, download files.
 
-- [ ] **4.1** Choose storage backend (local disk for dev, S3-compatible/object store for prod) behind a storage trait.
-- [ ] **4.2** `File`/`Folder` schema (owner, path/hierarchy, mime, size, metadata, timestamps).
-- [ ] **4.3** Upload endpoint (streamed/multipart, size limits), download endpoint (signed/streamed), delete, rename, move.
-- [ ] **4.4** Folder/tree organization + listing with pagination and search.
-- [ ] **4.5** Frontend file manager: tree/grid view, drag-and-drop upload, preview (images/PDF/text), context actions.
-- [ ] **4.6** Tests for upload/download/permissions (a user only sees their own files).
+- [x] **4.1** `Storage` trait (dyn, async) + `LocalStorage` (objects keyed by server UUID → no path traversal; temp-file+rename writes). S3 deferred behind the same trait.
+- [x] **4.2** `file`/`folder` tables (migration `0002`): owner, name, mime, size, `folder_id`/`parent_id` hierarchy, `storage_key`, timestamps; unique + owner indexes. Public ids are UUIDs (internal record ids never exposed).
+- [x] **4.3** Multipart upload (size-limited via `DefaultBodyLimit`→413, MIME validated, batch-atomic rollback), **streamed** download (allowlisted inline + `nosniff` + CSP, RFC 6266 `filename*`), rename/move (PATCH double-option), delete, folder create/rename/move(cycle-guarded)/delete-empty.
+- [x] **4.4** Listing with breadcrumbs + name search (case-insensitive, cross-folder) + pagination; all owner-scoped.
+- [x] **4.5** Frontend file manager: breadcrumb nav, folder/file grid, drag-and-drop + button upload, new folder, rename, delete (accessible ConfirmModal), download + image preview (credentialed blob), live region + states.
+- [x] **4.6** Tests: **30 backend** (lifecycle, move-into-folder, cycle guards, 413/400/404, search pagination/case, breadcrumbs, secure download headers, repo-level **owner isolation** with two synthetic owners) + **26 frontend**.
+
+> **Ownership while auth is deferred:** every query is owner-scoped, fed by a `CurrentOwner`
+> stub returning a fixed dev owner — the auth phase swaps only that extractor. Isolation is
+> proven at the repo layer with two owners. The content endpoint is the one path that needs
+> rework under cookie auth (uses a credentialed blob fetch on the client now to stay ready).
+>
+> Verified green: backend `build`/`clippy -D warnings`/`test` (30)/`fmt` + live curl
+> (upload→download bytes→move→delete + on-disk cleanup); frontend `tsc`/`eslint`/`vitest`
+> (26)/`build` + live screenshot. Hardened via adversarial review (57 findings → 44 verified →
+> ~17 applied, incl. a stored-XSS fix on the content path). Deferred: streaming upload `put`,
+> transactional delete/move under concurrency, S3 backend, move-via-UI, pagination UI.
 
 ## Phase 5 — Idea management & organization
 
