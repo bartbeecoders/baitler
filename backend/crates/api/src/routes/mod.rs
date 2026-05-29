@@ -17,12 +17,14 @@ pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors_allowed_origins);
     let files = crate::files::routes::router(state.config.storage.max_upload_bytes);
     let ideas = crate::ideas::routes::router();
+    let ai = crate::ai::routes::router();
 
     Router::new()
         .route("/health", get(health::health))
         .route("/version", get(health::version))
         .merge(files)
         .merge(ideas)
+        .merge(ai)
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

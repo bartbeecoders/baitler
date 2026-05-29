@@ -133,14 +133,20 @@ Goal: capture, tag, link, and organize ideas/notes.
 
 Goal: a vendor-neutral AI layer; analysis/insights over the user's data.
 
-- [ ] **6.1** Define a provider-neutral `LlmProvider` trait: `complete`, `chat`, `embed`, plus modality capabilities (text/image/video/audio).
-- [ ] **6.2** Implement adapters: OpenAI, Anthropic, OpenRouter, fal.ai. Per-user/per-org API key storage (encrypted at rest).
-- [ ] **6.3** Model registry + selection (multi-model): list available models per provider, route requests, capture usage/cost.
-- [ ] **6.4** Streaming responses (SSE/websocket) to the frontend.
-- [ ] **6.5** Multi-modal request/response handling (image, audio, video inputs/outputs) where providers support it.
-- [ ] **6.6** Feature surfaces: chat-with-your-data, summarize a file/idea, generate insights; ground prompts in user content (RAG via SurrealDB embeddings/vector search).
-- [ ] **6.7** Frontend: AI chat panel, model/provider picker, streaming UI, attach files/data as context.
-- [ ] **6.8** Tests with mocked providers; guardrails for key handling, rate limits, and timeouts.
+- [x] **6.1** Provider-neutral async `LlmProvider` trait (`chat_stream`, `models`, `requires_key`, modalities) + an `LlmRegistry`; shared SSE byte-stream parser.
+- [x] **6.2** Adapters: **Mock** (offline, no key — the verified path), **OpenAI-compatible** (OpenAI + OpenRouter), **Anthropic** (real adapters implemented against documented APIs; not exercised in CI — no keys/egress here). Per-owner API keys **encrypted at rest** (ChaCha20-Poly1305, key derived from `APP_SECRET`; `provider_key` table, migration `0004`).
+- [x] **6.3** Static model registry per provider; `GET /ai/providers` lists models + a per-owner `configured` flag; chat routes by `provider`+`model`. (Usage/cost capture deferred.)
+- [x] **6.4** Streaming via **SSE** (`POST /ai/chat`); frontend reads the stream with `fetch` + a ReadableStream SSE parser.
+- [ ] **6.5** ~~Multi-modal (image/audio/video) + fal.ai~~ — **deferred** (text chat only for now; the trait carries modality metadata).
+- [~] **6.6** chat-with-your-data via optional `context` grounding injected into the system prompt. Full RAG (embeddings + SurrealDB vector search) and summarize-a-file/idea surfaces **deferred**.
+- [x] **6.7** Frontend AI page: provider/model picker, streaming chat (Markdown-rendered replies, Stop), and encrypted key management (`KeySettingsModal`). Route code-split (lazy).
+- [x] **6.8** Tests: **backend** crypto (roundtrip/wrong-key/tamper), key store (owner-scoped, encrypted, never leaked), providers list, mock chat SSE, chat validation; **frontend** `streamChat` SSE parser + AiPage. Guardrails: key length/validation, message-size cap, timeouts inherited from request handling. Rate limiting deferred to Phase 10.
+
+> Verified green: backend `build`/`clippy -D warnings`/`test` (**44**)/`fmt` + live curl
+> (providers, mock SSE chat, key CRUD); frontend `tsc`/`eslint`/`vitest` (**34**)/`build`
+> + live screenshot of the AI page. **No LLM egress/keys in this env** — real adapters
+> compile and are wired but unexercised; the Mock provider is the end-to-end-tested path.
+> `APP_SECRET` must be set in production (a dev default is used otherwise, with a warning).
 
 ## Phase 7 — HTML document editor & conversion/export pathway
 

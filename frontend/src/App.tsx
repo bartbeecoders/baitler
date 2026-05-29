@@ -16,6 +16,7 @@ const FilesPage = lazy(() =>
 const IdeasPage = lazy(() =>
   import('@/features/ideas/IdeasPage').then((m) => ({ default: m.IdeasPage })),
 );
+const AiPage = lazy(() => import('@/features/ai/AiPage').then((m) => ({ default: m.AiPage })));
 
 function App() {
   useApplyTheme();
@@ -33,6 +34,8 @@ function App() {
                 <FilesPage />
               ) : item.path === '/ideas' ? (
                 <IdeasPage />
+              ) : item.path === '/ai' ? (
+                <AiPage />
               ) : (
                 <FeaturePlaceholder item={item} />
               )

@@ -54,6 +54,8 @@ pub struct Config {
     pub surreal: SurrealConfig,
     /// File storage settings.
     pub storage: StorageConfig,
+    /// 32-byte key for encrypting secrets at rest (derived from the app secret).
+    pub secret_key: [u8; 32],
 }
 
 /// File storage settings.
@@ -165,12 +167,27 @@ impl Config {
             max_upload_bytes: (max_upload_mb * 1024 * 1024) as usize,
         };
 
+        // Key for encrypting stored secrets (e.g. LLM API keys). A dev default
+        // keeps the app runnable, but it must be set in production.
+        let app_secret = match non_empty(env::var("APP_SECRET").ok()) {
+            Some(secret) => secret,
+            None => {
+                tracing::warn!(
+                    "APP_SECRET is not set — using an insecure dev default; stored secrets \
+                     (LLM API keys) are NOT meaningfully protected. Set APP_SECRET in production."
+                );
+                "baitler-insecure-dev-secret".to_string()
+            }
+        };
+        let secret_key = crate::crypto::derive_key(&app_secret);
+
         Ok(Self {
             bind_addr: SocketAddr::new(host, port),
             cors_allowed_origins,
             db_timeout,
             surreal,
             storage,
+            secret_key,
         })
     }
 }
@@ -231,6 +248,8 @@ impl fmt::Debug for Config {
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("db_timeout", &self.db_timeout)
             .field("surreal", &self.surreal)
+            .field("storage", &self.storage)
+            .field("secret_key", &"***")
             .finish()
     }
 }

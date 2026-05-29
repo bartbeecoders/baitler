@@ -32,8 +32,11 @@ dotenvy.workspace = true
 include_dir.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
-
-[dev-dependencies]
-# A real HTTP client for end-to-end integration tests. rustls avoids a system
-# OpenSSL dependency; we only talk plain HTTP to localhost in tests.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+# Outbound HTTP for LLM providers (also used by integration tests). rustls avoids
+# a system OpenSSL dependency.
+reqwest.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+chacha20poly1305.workspace = true
+sha2.workspace = true
+hex.workspace = true

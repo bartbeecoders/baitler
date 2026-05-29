@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::db::Db;
+use crate::llm::LlmRegistry;
 use crate::storage::Storage;
 
 /// Cloneable handle to shared resources. `Clone` is cheap: it bumps the inner
@@ -13,6 +14,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub db: Db,
     pub storage: Arc<dyn Storage>,
+    pub llm: Arc<LlmRegistry>,
 }
 
 impl AppState {
@@ -21,6 +23,7 @@ impl AppState {
             config: Arc::new(config),
             db,
             storage,
+            llm: Arc::new(LlmRegistry::with_defaults()),
         }
     }
 }

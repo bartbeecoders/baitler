@@ -35,6 +35,7 @@ fn test_config() -> Config {
                 .into_owned(),
             max_upload_bytes: 16 * 1024 * 1024,
         },
+        secret_key: [7u8; 32],
     }
 }
 

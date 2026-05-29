@@ -6,11 +6,14 @@
 //! [`config`], [`db`], [`error`], [`migrations`], [`routes`], [`state`],
 //! [`telemetry`].
 
+pub mod ai;
 pub mod config;
+pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod files;
 pub mod ideas;
+pub mod llm;
 pub mod migrations;
 pub mod owner;
 pub mod routes;

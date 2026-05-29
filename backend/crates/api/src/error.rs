@@ -57,6 +57,22 @@ impl From<crate::storage::StorageError> for AppError {
     }
 }
 
+impl From<crate::llm::LlmError> for AppError {
+    fn from(err: crate::llm::LlmError) -> Self {
+        use crate::llm::LlmError;
+        match err {
+            LlmError::MissingKey => {
+                AppError::BadRequest("no API key configured for this provider".to_string())
+            }
+            // Upstream/transport failures are not the client's fault → 503.
+            LlmError::Upstream { .. } | LlmError::Http(_) => {
+                AppError::Unavailable("the AI provider is currently unavailable".to_string())
+            }
+            LlmError::Other(msg) => AppError::Internal(msg.into()),
+        }
+    }
+}
+
 impl AppError {
     /// The HTTP status this error maps to.
     fn status(&self) -> StatusCode {

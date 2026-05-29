@@ -80,7 +80,11 @@ Frontend (from `frontend/`): `npm run dev` (Vite, port 5173), `npm run build`
 (`tsc -b` + `vite build`), `npm run lint`, `npm run typecheck`, `npm test` (Vitest).
 Stack: React 19 + TS (strict) + Tailwind v4 + React Router 7 + TanStack Query 5 + Zustand;
 react-markdown + @tailwindcss/typography for Markdown. Heavy feature routes are lazy-loaded.
-Features built: base portal, Files (Phase 4), Ideas (Phase 5, with a reusable MarkdownEditor).
+Features built: base portal, Files (Phase 4), Ideas (Phase 5, reusable MarkdownEditor),
+AI (Phase 6: multi-provider chat via a Mock + OpenAI/OpenRouter/Anthropic adapter behind an
+`LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`).
+No LLM egress/keys in this env — the Mock provider is the tested path; real adapters are
+compiled but unexercised. Set `APP_SECRET` in production.
 `@` aliases `src/`; Vite reads `VITE_*` from the **repo-root** `.env` (`envDir`).
 Auth/OAuth and route guards are deferred to the final phase — the shell is auth-ready
 (credentialed API client + `UserMenu` stub) but has no login yet.
