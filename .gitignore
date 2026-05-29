@@ -1,0 +1,32 @@
+# Rust
+/target
+**/target
+*.rs.bk
+Cargo.lock.orig
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# SurrealDB local data
+*.db
+surreal.db/
+data/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
