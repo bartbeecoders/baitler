@@ -44,13 +44,21 @@ Goal: an empty-but-runnable monorepo skeleton with version control, formatting, 
 
 Goal: a Rust API that boots, connects to SurrealDB, and answers a health check.
 
-- [ ] **1.1** `cargo init backend` as a workspace; pick web framework (recommend **Axum** + Tokio).
-- [ ] **1.2** Add core deps: `axum`, `tokio`, `tower-http` (CORS/trace), `serde`, `surrealdb`, `tracing`, `thiserror`, `config`/`dotenvy`.
-- [ ] **1.3** Config loading from env (`PORT`, `SURREAL_URL`, `SURREAL_NS`, `SURREAL_DB`, secrets).
-- [ ] **1.4** SurrealDB connection pool + a `migrations/` or schema-init module; run a local SurrealDB via Docker/`scripts/dev.sh`.
-- [ ] **1.5** `GET /health` and `GET /version` endpoints; structured logging + request tracing middleware.
-- [ ] **1.6** Standard error type → JSON error responses; CORS configured for the frontend origin.
-- [ ] **1.7** Integration test harness (spin up app + test DB namespace) with one passing test.
+- [x] **1.1** Cargo **workspace** at `backend/` with member `crates/api` (binary `baitler-api`, **Axum** + Tokio); `default-members` so `cargo run` works.
+- [x] **1.2** Core deps: `axum` 0.8, `tokio`, `tower-http` (cors/trace), `serde`, `surrealdb` 2 (`any` engine: `kv-mem`/`protocol-ws`/`protocol-http`), `tracing`(+subscriber), `thiserror`, `dotenvy`, `include_dir`.
+- [x] **1.3** `Config::from_env` (`PORT`, `BIND_HOST`, `CORS_ALLOWED_ORIGINS`, `SURREAL_*`, `SURREAL_TIMEOUT_SECS`) with **fail-fast validation** (wildcard/invalid origins, partial creds) and password redaction.
+- [x] **1.4** SurrealDB connect via the `any` engine (`memory`/`ws`/`http`); embedded migration runner applies `migrations/*.surql` **atomically** (apply + bookkeeping in one transaction), idempotently.
+- [x] **1.5** `GET /health` (timeout-bounded DB ping → 200/503) and `GET /version`; `tracing-subscriber` (EnvFilter, optional JSON) + `tower-http` `TraceLayer`.
+- [x] **1.6** `AppError` (thiserror) → JSON `{error:{code,message}}` envelope with server-fault sanitization; `CorsLayer` from validated origins with credentials.
+- [x] **1.7** Integration harness boots the app on an ephemeral port against an embedded `memory` DB. **18 tests** (health/version/404/CORS×2/migration-idempotency + config/error/db units), all green.
+
+> **Zero-install dev:** `SURREAL_URL=memory` runs SurrealDB in-process, so the API and
+> its tests need no `surreal` server or Docker. Set `ws://…` for a real datastore.
+>
+> Verified green: `cargo build`, `cargo clippy -D warnings`, `cargo test` (18), `cargo fmt --check`,
+> plus a runtime smoke test. Hardened via an adversarial multi-lens review (42 findings → 15 applied);
+> deferred items: `_migration` UNIQUE index (multi-replica), graceful-shutdown deadline, request-id
+> spans, global `TimeoutLayer` — revisit in later phases.
 
 ## Phase 2 — Auth (OAuth2-first)
 

@@ -59,19 +59,24 @@ top-level `scripts/` directory:
 
 ## Commands
 
-The monorepo skeleton and orchestration scripts exist (Phase 0). The frontend
-(Phase 3) and backend (Phase 1) are not scaffolded yet, so the scripts warn and skip
-those services until their manifests appear.
+The monorepo skeleton + scripts exist (Phase 0) and the **backend is scaffolded**
+(Phase 1: a Cargo workspace at `backend/` with the `baitler-api` crate). The frontend
+(Phase 3) is not scaffolded yet, so the scripts warn and skip it until `frontend/package.json` appears.
 
 - `cp .env.example .env` — create local config; fill in secrets/OAuth/LLM keys.
-- `./scripts/dev.sh` — run the full dev stack (SurrealDB + backend `cargo run` +
-  frontend `npm run dev`) together; Ctrl-C tears all down.
+- `./scripts/dev.sh` — run the full dev stack together; Ctrl-C tears all down.
 - `./scripts/build.sh` — release build (`cargo build --release` + `vite build`).
 
-Per-service commands (run inside the workspace dir) once scaffolded:
+Backend (from `backend/`, or pass `--manifest-path backend/Cargo.toml`):
 
-- Backend: `cargo run`, `cargo test`, `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`.
-- Frontend: `npm run dev`, `npm run build`, `npm run lint`, `npm test`.
+- `cargo run` — start the API. Defaults to `SURREAL_URL=memory` (embedded, in-process
+  SurrealDB), so **no `surreal` server or Docker is needed** for dev/tests. Endpoints:
+  `GET /health` (DB-ping readiness), `GET /version`.
+- `cargo test` — 18 unit + integration tests (embedded `memory` DB, ephemeral ports).
+- `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all`.
+- Bind host is `BIND_HOST` (not `HOST` — that collides with conda/build tooling).
+
+Frontend (once scaffolded): `npm run dev`, `npm run build`, `npm run lint`, `npm test`.
 
 CI (`.github/workflows/ci.yml`) runs fmt/clippy/test for the backend and
 lint/typecheck/build/test for the frontend, skipping a service until it is scaffolded.
