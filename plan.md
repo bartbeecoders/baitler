@@ -152,14 +152,20 @@ Goal: a vendor-neutral AI layer; analysis/insights over the user's data.
 
 Goal: rich document editing plus the shared HTML ↔ Markdown ↔ PDF ↔ Office pipeline.
 
-- [ ] **7.1** Choose rich-text/HTML editor (TipTap/ProseMirror); `Document` schema (HTML/Markdown body, version, owner).
-- [ ] **7.2** Editor UI: formatting toolbar, Markdown import/export, autosave, document list/management.
-- [ ] **7.3** **Shared conversion service** (single pathway, server-side): HTML↔Markdown, and export to:
-  - [ ] PDF (headless Chromium / `wkhtmltopdf` / typst).
-  - [ ] MS Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`) — via Pandoc/LibreOffice headless or Rust crates.
-- [ ] **7.4** Export endpoints returning the chosen format; progress/async for large jobs.
-- [ ] **7.5** Frontend export menu (PDF / Word / Excel / PowerPoint / Markdown) reused across editor, ideas, and files.
-- [ ] **7.6** Tests: round-trip conversions and export fidelity smoke tests.
+- [x] **7.1** **TipTap** rich-text editor (StarterKit); `document` table (migration `0005`): HTML `body`, `version` (bumped per save), owner, timestamps. Body sanitized with `ammonia` on store.
+- [x] **7.2** Editor UI: formatting toolbar (bold/italic/strike, H1/H2, lists, quote, code, undo/redo), Markdown **import** (.md → HTML) + **export** menu, debounced **autosave** with status, document list (create/select/delete).
+- [x] **7.3** **Shared conversion module** (`src/convert.rs`, single pathway): Markdown↔HTML (`pulldown-cmark` / `html2md`), `ammonia` sanitize, and export to:
+  - [x] PDF — headless Chrome (`CHROME_BIN`), verified end-to-end.
+  - [~] MS Word (`.docx`) — via Pandoc (`PANDOC_BIN`) when installed; returns a clear 503 otherwise (Pandoc absent here). **Excel/PowerPoint deferred** (those target structured data, not prose docs).
+- [x] **7.4** Export endpoints: `GET /documents/:id/export?format=…` and the shared `POST /export` (arbitrary content). (Async/progress for large jobs deferred.)
+- [x] **7.5** Reusable `ExportMenu` (PDF / Word / HTML / Markdown) calling `POST /export` and downloading the blob — usable by any feature (documents pass HTML, ideas could pass Markdown).
+- [x] **7.6** Tests: **backend** doc CRUD + owner isolation, md↔html conversion, sanitize, export to markdown/html, **PDF via Chrome** (asserts `%PDF`), docx-when-absent (503), unsupported-format (400); **frontend** DocumentsPage + ExportMenu.
+
+> Verified green: backend `build`/`clippy -D warnings`/`test` (**52**)/`fmt` + live curl
+> (CRUD, sanitize, export md/html/**pdf**, docx→503); frontend `tsc`/`eslint`/`vitest`
+> (**36**)/`build` + live screenshot of the editor. Editor route is code-split (TipTap is
+> its own ~120 KB gz chunk). **SSRF note:** server-side Chrome renders user HTML — sanitized
+> with ammonia (scripts/handlers stripped); network-isolating Chrome is a Phase-10 hardening item.
 
 ## Phase 8 — Data visualization & analytics
 

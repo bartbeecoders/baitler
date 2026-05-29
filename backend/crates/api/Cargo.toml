@@ -40,3 +40,6 @@ async-stream.workspace = true
 chacha20poly1305.workspace = true
 sha2.workspace = true
 hex.workspace = true
+pulldown-cmark.workspace = true
+html2md.workspace = true
+ammonia.workspace = true

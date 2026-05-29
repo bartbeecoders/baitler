@@ -82,9 +82,13 @@ Stack: React 19 + TS (strict) + Tailwind v4 + React Router 7 + TanStack Query 5 
 react-markdown + @tailwindcss/typography for Markdown. Heavy feature routes are lazy-loaded.
 Features built: base portal, Files (Phase 4), Ideas (Phase 5, reusable MarkdownEditor),
 AI (Phase 6: multi-provider chat via a Mock + OpenAI/OpenRouter/Anthropic adapter behind an
-`LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`).
+`LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`),
+Documents (Phase 7: TipTap HTML editor + shared conversion pathway in `src/convert.rs` —
+Markdown↔HTML, PDF via headless Chrome `CHROME_BIN`, Word via Pandoc `PANDOC_BIN` if present;
+HTML sanitized with ammonia; `POST /export` is the reusable export endpoint).
 No LLM egress/keys in this env — the Mock provider is the tested path; real adapters are
-compiled but unexercised. Set `APP_SECRET` in production.
+compiled but unexercised. PDF export needs Chrome; Word needs Pandoc (absent here → 503).
+Set `APP_SECRET` in production.
 `@` aliases `src/`; Vite reads `VITE_*` from the **repo-root** `.env` (`envDir`).
 Auth/OAuth and route guards are deferred to the final phase — the shell is auth-ready
 (credentialed API client + `UserMenu` stub) but has no login yet.

@@ -8,8 +8,10 @@
 
 pub mod ai;
 pub mod config;
+pub mod convert;
 pub mod crypto;
 pub mod db;
+pub mod documents;
 pub mod error;
 pub mod files;
 pub mod ideas;

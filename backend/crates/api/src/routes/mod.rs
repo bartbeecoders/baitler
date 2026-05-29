@@ -18,6 +18,7 @@ pub fn router(state: AppState) -> Router {
     let files = crate::files::routes::router(state.config.storage.max_upload_bytes);
     let ideas = crate::ideas::routes::router();
     let ai = crate::ai::routes::router();
+    let documents = crate::documents::routes::router();
 
     Router::new()
         .route("/health", get(health::health))
@@ -25,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .merge(files)
         .merge(ideas)
         .merge(ai)
+        .merge(documents)
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

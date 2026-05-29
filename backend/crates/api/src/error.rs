@@ -57,6 +57,22 @@ impl From<crate::storage::StorageError> for AppError {
     }
 }
 
+impl From<crate::convert::ConvertError> for AppError {
+    fn from(err: crate::convert::ConvertError) -> Self {
+        use crate::convert::ConvertError;
+        match err {
+            ConvertError::UnsupportedFormat => {
+                AppError::BadRequest("unsupported export format".to_string())
+            }
+            // The converter (Pandoc/Chrome) isn't installed on this server.
+            ConvertError::NotConfigured(what) => {
+                AppError::Unavailable(format!("{what} export is not available on this server"))
+            }
+            ConvertError::Failed(msg) => AppError::Internal(msg.into()),
+        }
+    }
+}
+
 impl From<crate::llm::LlmError> for AppError {
     fn from(err: crate::llm::LlmError) -> Self {
         use crate::llm::LlmError;
