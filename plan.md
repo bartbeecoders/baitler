@@ -30,15 +30,15 @@
 
 Goal: an empty-but-runnable monorepo skeleton with version control, formatting, and CI.
 
-- [ ] **0.1** `git init`; add `.gitignore` (Rust `target/`, Node `node_modules/`, `dist/`, `.env`, SurrealDB data dirs).
-- [ ] **0.2** Create monorepo layout: `frontend/`, `backend/`, `mobile/ios/`, `mobile/android/`, `scripts/`, `docs/`.
-- [ ] **0.3** Add root `README.md` (quickstart) and `.env.example` documenting every required env var.
-- [ ] **0.4** Decide & document toolchain versions: `.nvmrc` (Node), `rust-toolchain.toml` (Rust).
-- [ ] **0.5** Add editor/format config: `.editorconfig`, Prettier + ESLint (frontend), `rustfmt.toml` + Clippy (backend).
-- [ ] **0.6** `scripts/dev.sh` — run frontend + backend + SurrealDB together (e.g. via `concurrently`/`tmux`/`overmind`).
-- [ ] **0.7** `scripts/build.sh` — build frontend (`vite build`) and backend (`cargo build --release`).
-- [ ] **0.8** CI skeleton (GitHub Actions): lint + test for frontend and backend on PR.
-- [ ] **0.9** Update `CLAUDE.md` **Commands** section with the real commands now that they exist.
+- [x] **0.1** `git init`; add `.gitignore` (Rust `target/`, Node `node_modules/`, `dist/`, `.env`, SurrealDB data dirs).
+- [x] **0.2** Create monorepo layout: `frontend/`, `backend/`, `mobile/ios/`, `mobile/android/`, `scripts/`, `docs/`.
+- [x] **0.3** Add root `README.md` (quickstart) and `.env.example` documenting every required env var.
+- [x] **0.4** Decide & document toolchain versions: `.nvmrc` (Node), `rust-toolchain.toml` (Rust).
+- [x] **0.5** Add editor/format config: `.editorconfig`, `.prettierrc.json`, `rustfmt.toml` (+ Clippy via toolchain). ESLint ships with the frontend scaffold (Phase 3, needs installed React/TS plugins).
+- [x] **0.6** `scripts/dev.sh` — run frontend + backend + SurrealDB together; degrades gracefully until services are scaffolded.
+- [x] **0.7** `scripts/build.sh` — build frontend (`vite build`) and backend (`cargo build --release`).
+- [x] **0.8** CI skeleton (GitHub Actions): lint + test for frontend and backend on PR.
+- [x] **0.9** Update `CLAUDE.md` **Commands** section with the real commands now that they exist.
 
 ## Phase 1 — Backend skeleton & SurrealDB
 

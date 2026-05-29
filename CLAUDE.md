@@ -59,7 +59,21 @@ top-level `scripts/` directory:
 
 ## Commands
 
-None yet — there is no package manifest, Cargo workspace, or scripts. Per the brief,
-the intended entry points are dev-run and build scripts under `scripts/`. Record the
-actual commands here as soon as they exist (how to run the frontend, the Rust API,
-the combined dev loop, tests, and lint).
+The monorepo skeleton and orchestration scripts exist (Phase 0). The frontend
+(Phase 3) and backend (Phase 1) are not scaffolded yet, so the scripts warn and skip
+those services until their manifests appear.
+
+- `cp .env.example .env` — create local config; fill in secrets/OAuth/LLM keys.
+- `./scripts/dev.sh` — run the full dev stack (SurrealDB + backend `cargo run` +
+  frontend `npm run dev`) together; Ctrl-C tears all down.
+- `./scripts/build.sh` — release build (`cargo build --release` + `vite build`).
+
+Per-service commands (run inside the workspace dir) once scaffolded:
+
+- Backend: `cargo run`, `cargo test`, `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`.
+- Frontend: `npm run dev`, `npm run build`, `npm run lint`, `npm test`.
+
+CI (`.github/workflows/ci.yml`) runs fmt/clippy/test for the backend and
+lint/typecheck/build/test for the frontend, skipping a service until it is scaffolded.
+
+Toolchain versions are pinned: Node in `.nvmrc`, Rust in `rust-toolchain.toml`.

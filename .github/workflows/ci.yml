@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check if backend is scaffolded
+        id: check
+        run: |
+          if [[ -f backend/Cargo.toml ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::backend/Cargo.toml not present yet (Phase 1) — skipping."
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.check.outputs.exists == 'true'
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        if: steps.check.outputs.exists == 'true'
+        with:
+          workspaces: backend
+      - name: fmt
+        if: steps.check.outputs.exists == 'true'
+        working-directory: backend
+        run: cargo fmt --all -- --check
+      - name: clippy
+        if: steps.check.outputs.exists == 'true'
+        working-directory: backend
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        if: steps.check.outputs.exists == 'true'
+        working-directory: backend
+        run: cargo test
+
+  frontend:
+    name: Frontend (React/Vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check if frontend is scaffolded
+        id: check
+        run: |
+          if [[ -f frontend/package.json ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::frontend/package.json not present yet (Phase 3) — skipping."
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: install
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm ci
+      - name: lint
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm run lint
+      - name: typecheck
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm run typecheck --if-present
+      - name: build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm run build
+      - name: test
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm test --if-present
