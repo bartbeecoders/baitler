@@ -59,9 +59,9 @@ top-level `scripts/` directory:
 
 ## Commands
 
-The monorepo skeleton + scripts exist (Phase 0) and the **backend is scaffolded**
-(Phase 1: a Cargo workspace at `backend/` with the `baitler-api` crate). The frontend
-(Phase 3) is not scaffolded yet, so the scripts warn and skip it until `frontend/package.json` appears.
+The monorepo skeleton + scripts exist (Phase 0), the **backend is scaffolded**
+(Phase 1: Cargo workspace at `backend/`, crate `baitler-api`), and the **frontend is
+scaffolded** (Phase 3: Vite + React + TS at `frontend/`). Mobile (Phase 9) is not yet started.
 
 - `cp .env.example .env` — create local config; fill in secrets/OAuth/LLM keys.
 - `./scripts/dev.sh` — run the full dev stack together; Ctrl-C tears all down.
@@ -76,7 +76,12 @@ Backend (from `backend/`, or pass `--manifest-path backend/Cargo.toml`):
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all`.
 - Bind host is `BIND_HOST` (not `HOST` — that collides with conda/build tooling).
 
-Frontend (once scaffolded): `npm run dev`, `npm run build`, `npm run lint`, `npm test`.
+Frontend (from `frontend/`): `npm run dev` (Vite, port 5173), `npm run build`
+(`tsc -b` + `vite build`), `npm run lint`, `npm run typecheck`, `npm test` (Vitest).
+Stack: React 19 + TS (strict) + Tailwind v4 + React Router 7 + TanStack Query 5 + Zustand.
+`@` aliases `src/`; Vite reads `VITE_*` from the **repo-root** `.env` (`envDir`).
+Auth/OAuth and route guards are deferred to the final phase — the shell is auth-ready
+(credentialed API client + `UserMenu` stub) but has no login yet.
 
 CI (`.github/workflows/ci.yml`) runs fmt/clippy/test for the backend and
 lint/typecheck/build/test for the frontend, skipping a service until it is scaffolded.

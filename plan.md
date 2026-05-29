@@ -76,12 +76,21 @@ Goal: users sign in via Google/GitHub; sessions are issued and verified.
 
 Goal: the central hub UI that every feature plugs into.
 
-- [ ] **3.1** Scaffold `frontend` with Vite + React + TS; install + configure TailwindCSS.
-- [ ] **3.2** App shell: routing (React Router), layout (nav/sidebar/header), theme (light/dark), design tokens.
-- [ ] **3.3** API client layer (typed fetch/axios wrapper, auth header/cookie handling, error toasts); pick data-fetching lib (TanStack Query).
-- [ ] **3.4** **Base portal** dashboard: landing hub with cards/sections linking to each feature (files, ideas, analytics, editor, AI).
-- [ ] **3.5** Shared UI kit (buttons, inputs, modals, tables) + state management (Zustand/Context).
-- [ ] **3.6** Wire the Phase 2 auth flow into the shell; protected layout.
+- [x] **3.1** Scaffolded `frontend` with Vite 8 + React 19 + TS (strict); TailwindCSS v4 via `@tailwindcss/vite`; `@`→`src` alias; Vite `envDir`→repo root so one `.env` serves all workspaces.
+- [x] **3.2** App shell: React Router 7 routes; `AppLayout` (responsive sidebar + sticky header, mobile drawer with focus trap + scroll lock); light/dark theme via Zustand + CSS-variable design tokens (amber "honey" accent); pre-paint inline script avoids FOUC.
+- [x] **3.3** Typed `apiFetch` client (base URL from `VITE_API_BASE_URL`, `credentials:'include'` for future cookies, `AbortSignal` passthrough, error-envelope → `ApiError`, prod fail-loud); TanStack Query 5 + `useHealth`/`useVersion`.
+- [x] **3.4** **Base portal** dashboard: feature cards linking to files/ideas/documents/analytics/AI (phase-badged); live **System status** panel (API/DB/version); placeholder pages per feature route + 404.
+- [x] **3.5** UI kit (`Button`/`Card`/`Badge`/`Spinner` with `cn()` = clsx+tailwind-merge) + Zustand theme store; `ErrorBoundary`; skip-link; auth-ready header `UserMenu` stub.
+- [ ] **3.6** ~~Wire the Phase 2 auth flow into the shell; protected layout.~~ **Deferred** — auth is being added in the final phase (per direction). Shell is auth-*ready*: credentialed client + UserMenu slot.
+
+> Verified green: `tsc -b` (strict + `noUncheckedIndexedAccess`), `eslint .`, `vitest run`
+> (**24 tests**: api/routing/theme+apply/status/Button/Dashboard), `vite build`, plus a
+> live full-stack run (headless screenshot showed the base portal with "API connected" +
+> version from the real backend). Hardened via adversarial multi-lens review (54 findings →
+> 42 verified → ~20 applied, incl. two WCAG fixes: feature-card focus ring, amber-text contrast).
+> Deferred: theme `system` mode, per-route `<title>`, CSP/security headers, env typing — later phases.
+>
+> **Zero-install dev:** `SURREAL_URL=memory` (backend) means `./scripts/dev.sh` runs the whole stack with no `surreal`/Docker.
 
 ## Phase 4 — File storage & management
 

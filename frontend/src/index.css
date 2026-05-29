@@ -1,0 +1,117 @@
+@import 'tailwindcss';
+
+/* Class-based dark mode: toggling `.dark` on <html> flips the theme. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Semantic design tokens as raw HSL triplets, overridden in `.dark`.
+ * Palette: warm neutrals + an amber "honey" accent (Baitler = Butler + AI,
+ * bartbeecoders' bee motif). Mapped into Tailwind utilities below, so
+ * `bg-background`, `text-foreground`, `border-border`, `bg-primary`, etc. work.
+ */
+:root {
+  --background: 40 30% 99%;
+  --foreground: 240 10% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 12%;
+  --muted: 40 16% 95%;
+  --muted-foreground: 240 4% 44%;
+  --border: 40 12% 88%;
+  --input: 40 12% 88%;
+  --primary: 38 92% 50%;
+  --primary-foreground: 30 60% 12%;
+  /* Darker amber for use as TEXT on light surfaces (passes WCAG AA);
+     `--primary` stays bright for fills. */
+  --primary-strong: 38 95% 33%;
+  --accent: 40 60% 90%;
+  --accent-foreground: 30 60% 18%;
+  --ring: 38 92% 50%;
+  --success: 152 60% 32%;
+  --danger: 0 72% 45%;
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 240 10% 7%;
+  --foreground: 40 20% 96%;
+  --card: 240 8% 10%;
+  --card-foreground: 40 20% 96%;
+  --muted: 240 6% 15%;
+  --muted-foreground: 240 5% 64%;
+  --border: 240 5% 18%;
+  --input: 240 5% 20%;
+  --primary: 38 92% 55%;
+  --primary-foreground: 30 60% 10%;
+  --primary-strong: 38 92% 62%;
+  --accent: 38 30% 16%;
+  --accent-foreground: 40 60% 90%;
+  --ring: 38 92% 55%;
+  --success: 152 50% 52%;
+  --danger: 0 80% 68%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-primary-strong: hsl(var(--primary-strong));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-ring: hsl(var(--ring));
+  --color-success: hsl(var(--success));
+  --color-danger: hsl(var(--danger));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 0.25rem);
+  --radius-sm: calc(var(--radius) - 0.4rem);
+
+  --font-sans:
+    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100svh;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible focus ring for keyboard users across interactive elements. */
+  :where(a, button, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Respect users who prefer reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
