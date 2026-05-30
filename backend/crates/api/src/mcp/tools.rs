@@ -24,7 +24,6 @@ use crate::files::repo as files_repo;
 use crate::ideas::model::{IdeaDto, IdeaSummary, REVIEWS, STATUSES};
 use crate::ideas::repo as ideas_repo;
 use crate::llm::{ChatMessage, ChatRequest};
-use crate::owner::DEV_OWNER;
 use crate::state::AppState;
 
 use super::b64;
@@ -73,35 +72,35 @@ const MAX_BLOB: usize = 24 * 1024 * 1024;
 
 /// Execute a tool by name. Returns the raw tool result value; the protocol
 /// layer wraps it into MCP `content`.
-pub async fn call(state: &AppState, name: &str, args: &Value) -> ToolResult {
+pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> ToolResult {
     match name {
         "health" => health(state).await,
         // Ideas
-        "ideas_list" => ideas_list(state, args).await,
-        "ideas_get" => ideas_get(state, args).await,
-        "ideas_create" => ideas_create(state, args).await,
-        "ideas_update" => ideas_update(state, args).await,
-        "ideas_delete" => ideas_delete(state, args).await,
-        "ideas_link" => ideas_link(state, args).await,
-        "ideas_unlink" => ideas_unlink(state, args).await,
-        "ideas_tags" => ideas_tags(state).await,
+        "ideas_list" => ideas_list(state, owner, args).await,
+        "ideas_get" => ideas_get(state, owner, args).await,
+        "ideas_create" => ideas_create(state, owner, args).await,
+        "ideas_update" => ideas_update(state, owner, args).await,
+        "ideas_delete" => ideas_delete(state, owner, args).await,
+        "ideas_link" => ideas_link(state, owner, args).await,
+        "ideas_unlink" => ideas_unlink(state, owner, args).await,
+        "ideas_tags" => ideas_tags(state, owner).await,
         // Documents
-        "documents_list" => documents_list(state).await,
-        "documents_get" => documents_get(state, args).await,
-        "documents_create" => documents_create(state, args).await,
-        "documents_update" => documents_update(state, args).await,
-        "documents_delete" => documents_delete(state, args).await,
-        "documents_export" => documents_export(state, args).await,
+        "documents_list" => documents_list(state, owner).await,
+        "documents_get" => documents_get(state, owner, args).await,
+        "documents_create" => documents_create(state, owner, args).await,
+        "documents_update" => documents_update(state, owner, args).await,
+        "documents_delete" => documents_delete(state, owner, args).await,
+        "documents_export" => documents_export(state, owner, args).await,
         // Files & folders
-        "files_list" => files_list(state, args).await,
-        "files_get" => files_get(state, args).await,
-        "files_read" => files_read(state, args).await,
-        "files_write" => files_write(state, args).await,
-        "files_delete" => files_delete(state, args).await,
-        "folders_create" => folders_create(state, args).await,
+        "files_list" => files_list(state, owner, args).await,
+        "files_get" => files_get(state, owner, args).await,
+        "files_read" => files_read(state, owner, args).await,
+        "files_write" => files_write(state, owner, args).await,
+        "files_delete" => files_delete(state, owner, args).await,
+        "folders_create" => folders_create(state, owner, args).await,
         // AI
-        "ai_providers" => ai_providers(state).await,
-        "ai_chat" => ai_chat(state, args).await,
+        "ai_providers" => ai_providers(state, owner).await,
+        "ai_chat" => ai_chat(state, owner, args).await,
         // Conversion / export
         "export" => export_tool(args).await,
         _ => Err(ToolError::UnknownTool),
@@ -284,7 +283,7 @@ async fn health(state: &AppState) -> ToolResult {
 
 // ── Ideas ─────────────────────────────────────────────────────────────────────
 
-async fn ideas_list(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let status = match opt_trimmed(args, "status") {
         Some(s) => Some(clean_status(&s)?),
         None => None,
@@ -298,7 +297,7 @@ async fn ideas_list(state: &AppState, args: &Value) -> ToolResult {
 
     let ideas = ideas_repo::list_ideas(
         &state.db,
-        DEV_OWNER,
+        owner,
         status.as_deref(),
         tag.as_deref(),
         q.as_deref(),
@@ -310,17 +309,17 @@ async fn ideas_list(state: &AppState, args: &Value) -> ToolResult {
     Ok(json!({ "ideas": dtos }))
 }
 
-async fn ideas_get(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    let idea = ideas_repo::get_idea(&state.db, DEV_OWNER, &id)
+    let idea = ideas_repo::get_idea(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
-    let related = ideas_repo::resolve_many(&state.db, DEV_OWNER, &idea.links).await?;
+    let related = ideas_repo::resolve_many(&state.db, owner, &idea.links).await?;
     let related: Vec<IdeaSummary> = related.into_iter().map(IdeaSummary::from).collect();
     Ok(json!({ "idea": IdeaDto::from(idea), "related": related }))
 }
 
-async fn ideas_create(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let title = clean_title(&req_str(args, "title")?)?;
     let body = opt_str(args, "body").unwrap_or_default();
     if body.len() > MAX_IDEA_BODY {
@@ -335,15 +334,15 @@ async fn ideas_create(state: &AppState, args: &Value) -> ToolResult {
     // `project_id` arg (with existence validation) is wired in 11.8 once the
     // knowledge repo exists; until then new ideas are created unbound.
     let idea = ideas_repo::create_idea(
-        &state.db, DEV_OWNER, &title, &body, &tags, &status, &review, None,
+        &state.db, owner, &title, &body, &tags, &status, &review, None,
     )
     .await?;
     Ok(json!(IdeaDto::from(idea)))
 }
 
-async fn ideas_update(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    ideas_repo::get_idea(&state.db, DEV_OWNER, &id)
+    ideas_repo::get_idea(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
 
@@ -367,7 +366,7 @@ async fn ideas_update(state: &AppState, args: &Value) -> ToolResult {
 
     let updated = ideas_repo::update_idea(
         &state.db,
-        DEV_OWNER,
+        owner,
         &id,
         title.as_deref(),
         body.as_deref(),
@@ -380,60 +379,60 @@ async fn ideas_update(state: &AppState, args: &Value) -> ToolResult {
     Ok(json!(IdeaDto::from(updated)))
 }
 
-async fn ideas_delete(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    if ideas_repo::delete_idea(&state.db, DEV_OWNER, &id).await? {
+    if ideas_repo::delete_idea(&state.db, owner, &id).await? {
         Ok(json!({ "deleted": true, "id": id }))
     } else {
         Err(not_found())
     }
 }
 
-async fn ideas_link(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_link(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
     let target = req_str(args, "target_id")?;
     if id == target {
         return Err(invalid("an idea cannot link to itself"));
     }
-    ideas_repo::get_idea(&state.db, DEV_OWNER, &id)
+    ideas_repo::get_idea(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
-    ideas_repo::link_ideas(&state.db, DEV_OWNER, &id, &target).await?;
+    ideas_repo::link_ideas(&state.db, owner, &id, &target).await?;
     Ok(json!({ "linked": true, "id": id, "target_id": target }))
 }
 
-async fn ideas_unlink(state: &AppState, args: &Value) -> ToolResult {
+async fn ideas_unlink(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
     let target = req_str(args, "target_id")?;
-    ideas_repo::get_idea(&state.db, DEV_OWNER, &id)
+    ideas_repo::get_idea(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
-    ideas_repo::unlink_ideas(&state.db, DEV_OWNER, &id, &target).await?;
+    ideas_repo::unlink_ideas(&state.db, owner, &id, &target).await?;
     Ok(json!({ "unlinked": true, "id": id, "target_id": target }))
 }
 
-async fn ideas_tags(state: &AppState) -> ToolResult {
-    let tags = ideas_repo::distinct_tags(&state.db, DEV_OWNER).await?;
+async fn ideas_tags(state: &AppState, owner: &str) -> ToolResult {
+    let tags = ideas_repo::distinct_tags(&state.db, owner).await?;
     Ok(json!({ "tags": tags }))
 }
 
 // ── Documents ─────────────────────────────────────────────────────────────────
 
-async fn documents_list(state: &AppState) -> ToolResult {
-    let docs = doc_repo::list_documents(&state.db, DEV_OWNER).await?;
+async fn documents_list(state: &AppState, owner: &str) -> ToolResult {
+    let docs = doc_repo::list_documents(&state.db, owner).await?;
     let dtos: Vec<DocumentSummary> = docs.into_iter().map(Into::into).collect();
     Ok(json!({ "documents": dtos }))
 }
 
-async fn documents_get(state: &AppState, args: &Value) -> ToolResult {
+async fn documents_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    let doc = doc_repo::get_document(&state.db, DEV_OWNER, &id)
+    let doc = doc_repo::get_document(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
     Ok(json!(DocumentDto::from(doc)))
 }
 
-async fn documents_create(state: &AppState, args: &Value) -> ToolResult {
+async fn documents_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let title = clean_title(&req_str(args, "title")?)?;
     let raw = opt_str(args, "body").unwrap_or_default();
     if raw.len() > MAX_DOC_BODY {
@@ -441,13 +440,13 @@ async fn documents_create(state: &AppState, args: &Value) -> ToolResult {
     }
     let html = convert::sanitize(&raw);
     let review = clean_review(args)?;
-    let doc = doc_repo::create_document(&state.db, DEV_OWNER, &title, &html, &review, None).await?;
+    let doc = doc_repo::create_document(&state.db, owner, &title, &html, &review, None).await?;
     Ok(json!(DocumentDto::from(doc)))
 }
 
-async fn documents_update(state: &AppState, args: &Value) -> ToolResult {
+async fn documents_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    doc_repo::get_document(&state.db, DEV_OWNER, &id)
+    doc_repo::get_document(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
 
@@ -464,7 +463,7 @@ async fn documents_update(state: &AppState, args: &Value) -> ToolResult {
 
     let updated = doc_repo::update_document(
         &state.db,
-        DEV_OWNER,
+        owner,
         &id,
         title.as_deref(),
         html.as_deref(),
@@ -475,20 +474,20 @@ async fn documents_update(state: &AppState, args: &Value) -> ToolResult {
     Ok(json!(DocumentDto::from(updated)))
 }
 
-async fn documents_delete(state: &AppState, args: &Value) -> ToolResult {
+async fn documents_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    if doc_repo::delete_document(&state.db, DEV_OWNER, &id).await? {
+    if doc_repo::delete_document(&state.db, owner, &id).await? {
         Ok(json!({ "deleted": true, "id": id }))
     } else {
         Err(not_found())
     }
 }
 
-async fn documents_export(state: &AppState, args: &Value) -> ToolResult {
+async fn documents_export(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
     let target = TargetFormat::parse(&req_str(args, "format")?)
         .ok_or_else(|| invalid("unsupported export format (html|markdown|pdf|docx)"))?;
-    let doc = doc_repo::get_document(&state.db, DEV_OWNER, &id)
+    let doc = doc_repo::get_document(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
     let bytes = convert::export(&doc.body, SourceFormat::Html, target)
@@ -536,7 +535,7 @@ fn export_payload(bytes: Vec<u8>, target: TargetFormat, name: &str) -> Value {
 
 // ── Files & folders ───────────────────────────────────────────────────────────
 
-async fn files_list(state: &AppState, args: &Value) -> ToolResult {
+async fn files_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let db = &state.db;
 
     if let Some(q) = opt_trimmed(args, "q") {
@@ -544,35 +543,35 @@ async fn files_list(state: &AppState, args: &Value) -> ToolResult {
             .unwrap_or(DEFAULT_LIMIT)
             .min(MAX_LIMIT);
         let offset = opt_usize(args, "offset").unwrap_or(0);
-        let files = files_repo::search_files(db, DEV_OWNER, &q, limit, offset).await?;
+        let files = files_repo::search_files(db, owner, &q, limit, offset).await?;
         let files: Vec<FileDto> = files.into_iter().map(Into::into).collect();
         return Ok(json!({ "files": files, "folders": [] }));
     }
 
     let folder = opt_trimmed(args, "folder");
     if let Some(f) = folder.as_deref() {
-        files_repo::get_folder(db, DEV_OWNER, f)
+        files_repo::get_folder(db, owner, f)
             .await?
             .ok_or_else(not_found)?;
     }
-    let folders = files_repo::list_folders(db, DEV_OWNER, folder.as_deref()).await?;
-    let files = files_repo::list_files(db, DEV_OWNER, folder.as_deref()).await?;
+    let folders = files_repo::list_folders(db, owner, folder.as_deref()).await?;
+    let files = files_repo::list_files(db, owner, folder.as_deref()).await?;
     let folders: Vec<FolderDto> = folders.into_iter().map(Into::into).collect();
     let files: Vec<FileDto> = files.into_iter().map(Into::into).collect();
     Ok(json!({ "folder": folder, "folders": folders, "files": files }))
 }
 
-async fn files_get(state: &AppState, args: &Value) -> ToolResult {
+async fn files_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    let file = files_repo::get_file(&state.db, DEV_OWNER, &id)
+    let file = files_repo::get_file(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
     Ok(json!(FileDto::from(file)))
 }
 
-async fn files_read(state: &AppState, args: &Value) -> ToolResult {
+async fn files_read(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    let file = files_repo::get_file(&state.db, DEV_OWNER, &id)
+    let file = files_repo::get_file(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
     if file.size as usize > MAX_BLOB {
@@ -600,12 +599,12 @@ async fn files_read(state: &AppState, args: &Value) -> ToolResult {
     }))
 }
 
-async fn files_write(state: &AppState, args: &Value) -> ToolResult {
+async fn files_write(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let db = &state.db;
     let name = clean_name(&req_str(args, "name")?)?;
     let folder = opt_trimmed(args, "folder");
     if let Some(f) = folder.as_deref() {
-        files_repo::get_folder(db, DEV_OWNER, f)
+        files_repo::get_folder(db, owner, f)
             .await?
             .ok_or_else(|| invalid("target folder does not exist"))?;
     }
@@ -636,7 +635,7 @@ async fn files_write(state: &AppState, args: &Value) -> ToolResult {
 
     match files_repo::create_file(
         db,
-        DEV_OWNER,
+        owner,
         &storage_key,
         &name,
         &mime,
@@ -655,9 +654,9 @@ async fn files_write(state: &AppState, args: &Value) -> ToolResult {
     }
 }
 
-async fn files_delete(state: &AppState, args: &Value) -> ToolResult {
+async fn files_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let id = req_str(args, "id")?;
-    let deleted = files_repo::delete_file(&state.db, DEV_OWNER, &id)
+    let deleted = files_repo::delete_file(&state.db, owner, &id)
         .await?
         .ok_or_else(not_found)?;
     if let Err(e) = state.storage.delete(&deleted.storage_key).await {
@@ -666,23 +665,23 @@ async fn files_delete(state: &AppState, args: &Value) -> ToolResult {
     Ok(json!({ "deleted": true, "id": id }))
 }
 
-async fn folders_create(state: &AppState, args: &Value) -> ToolResult {
+async fn folders_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let db = &state.db;
     let name = clean_name(&req_str(args, "name")?)?;
     let parent = opt_trimmed(args, "parent_id");
     if let Some(p) = parent.as_deref() {
-        files_repo::get_folder(db, DEV_OWNER, p)
+        files_repo::get_folder(db, owner, p)
             .await?
             .ok_or_else(|| invalid("parent folder does not exist"))?;
     }
-    let folder = files_repo::create_folder(db, DEV_OWNER, &name, parent.as_deref()).await?;
+    let folder = files_repo::create_folder(db, owner, &name, parent.as_deref()).await?;
     Ok(json!(FolderDto::from(folder)))
 }
 
 // ── AI ────────────────────────────────────────────────────────────────────────
 
-async fn ai_providers(state: &AppState) -> ToolResult {
-    let configured: HashSet<String> = ai_repo::list_configured(&state.db, DEV_OWNER)
+async fn ai_providers(state: &AppState, owner: &str) -> ToolResult {
+    let configured: HashSet<String> = ai_repo::list_configured(&state.db, owner)
         .await?
         .into_iter()
         .collect();
@@ -703,7 +702,7 @@ async fn ai_providers(state: &AppState) -> ToolResult {
     Ok(json!({ "providers": providers }))
 }
 
-async fn ai_chat(state: &AppState, args: &Value) -> ToolResult {
+async fn ai_chat(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let provider_id = req_str(args, "provider")?;
     let model = req_str(args, "model")?;
     let messages: Vec<ChatMessage> = match args.get("messages") {
@@ -721,7 +720,7 @@ async fn ai_chat(state: &AppState, args: &Value) -> ToolResult {
         .ok_or_else(|| invalid(format!("unknown provider `{provider_id}`")))?;
 
     let api_key: Option<String> = if provider.requires_key() {
-        let ciphertext = ai_repo::get_ciphertext(&state.db, DEV_OWNER, provider.id())
+        let ciphertext = ai_repo::get_ciphertext(&state.db, owner, provider.id())
             .await?
             .ok_or_else(|| invalid(format!("no API key configured for {}", provider.id())))?;
         let key = crypto::decrypt(&state.config.secret_key, &ciphertext)

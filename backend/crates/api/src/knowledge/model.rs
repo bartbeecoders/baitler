@@ -97,3 +97,26 @@ pub struct ProjectMembers {
     pub documents: Vec<MemberItem>,
     pub files: Vec<MemberItem>,
 }
+
+/// One full-text search hit (within a typed section).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub id: String,
+    pub title: String,
+    /// Highlighted snippet around the match (`None` if the match was in the title).
+    #[serde(default)]
+    pub snippet: Option<String>,
+    /// BM25 score (may be negative for very common terms — a relative signal only).
+    pub score: f64,
+}
+
+/// Cross-type search results as honest typed sections, each internally ranked.
+/// There is deliberately no unified cross-table relevance rank (the engine can't
+/// produce one cheaply across four independently-scored tables).
+#[derive(Debug, Default, Serialize)]
+pub struct SearchResults {
+    pub ideas: Vec<SearchHit>,
+    pub documents: Vec<SearchHit>,
+    pub projects: Vec<SearchHit>,
+    pub files: Vec<SearchHit>,
+}

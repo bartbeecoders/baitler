@@ -12,8 +12,8 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 use super::model::{
-    LinkRef, LinkRow, MemberCounts, MemberItem, ProjectMembers, ProjectRow, ITEM_TYPES,
-    MEMBER_TYPES,
+    LinkRef, LinkRow, MemberCounts, MemberItem, ProjectMembers, ProjectRow, SearchHit,
+    SearchResults, ITEM_TYPES, MEMBER_TYPES,
 };
 
 const PROJECT_SELECT: &str = "SELECT uuid, owner, name, slug, summary, status, \
@@ -398,6 +398,79 @@ pub async fn scrub_item_links(db: &Db, owner: &str, kind: &str, id: &str) -> App
     .await?
     .check()?;
     Ok(())
+}
+
+// ── Cross-type full-text search ───────────────────────────────────────────────
+
+/// Search ideas, documents, projects, and files by full text. Returns typed
+/// sections, each ranked by BM25 score then recency. Owner-scoped; backed by the
+/// per-field SEARCH indexes from migration 0008.
+pub async fn search(db: &Db, owner: &str, q: &str, limit: usize) -> AppResult<SearchResults> {
+    Ok(SearchResults {
+        ideas: search_two(db, owner, "idea", "title", "body", q, limit).await?,
+        documents: search_two(db, owner, "document", "title", "body", q, limit).await?,
+        projects: search_two(db, owner, "project", "name", "summary", q, limit).await?,
+        files: search_one(db, owner, "file", "name", q, limit).await?,
+    })
+}
+
+/// Search a table whose text lives in two fields (`@0@` / `@1@`). The snippet
+/// highlights the second field (the "body"); the score sums both predicates.
+async fn search_two(
+    db: &Db,
+    owner: &str,
+    table: &str,
+    f0: &str,
+    f1: &str,
+    q: &str,
+    limit: usize,
+) -> AppResult<Vec<SearchHit>> {
+    let tcol = title_col(table);
+    let sql = format!(
+        "SELECT uuid AS id, {tcol} AS title, \
+                search::highlight('<mark>', '</mark>', 1) AS snippet, \
+                (search::score(0) ?? 0) + (search::score(1) ?? 0) AS score, updated_at \
+         FROM {table} WHERE owner = $owner AND ({f0} @0@ $q OR {f1} @1@ $q) \
+         ORDER BY score DESC, updated_at DESC LIMIT $limit"
+    );
+    run_search(db, owner, sql, q, limit).await
+}
+
+/// Search a table whose text lives in a single field (`@0@`).
+async fn search_one(
+    db: &Db,
+    owner: &str,
+    table: &str,
+    f0: &str,
+    q: &str,
+    limit: usize,
+) -> AppResult<Vec<SearchHit>> {
+    let tcol = title_col(table);
+    let sql = format!(
+        "SELECT uuid AS id, {tcol} AS title, \
+                search::highlight('<mark>', '</mark>', 0) AS snippet, \
+                (search::score(0) ?? 0) AS score, updated_at \
+         FROM {table} WHERE owner = $owner AND {f0} @0@ $q \
+         ORDER BY score DESC, updated_at DESC LIMIT $limit"
+    );
+    run_search(db, owner, sql, q, limit).await
+}
+
+async fn run_search(
+    db: &Db,
+    owner: &str,
+    sql: String,
+    q: &str,
+    limit: usize,
+) -> AppResult<Vec<SearchHit>> {
+    let mut res = db
+        .query(sql)
+        .bind(("owner", owner.to_string()))
+        .bind(("q", q.to_string()))
+        .bind(("limit", limit as i64))
+        .await?
+        .check()?;
+    Ok(res.take(0)?)
 }
 
 // ── Slug helpers ──────────────────────────────────────────────────────────────

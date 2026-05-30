@@ -6,6 +6,7 @@
 //! [`config`], [`db`], [`error`], [`migrations`], [`routes`], [`state`],
 //! [`telemetry`].
 
+pub mod activity;
 pub mod ai;
 pub mod config;
 pub mod convert;

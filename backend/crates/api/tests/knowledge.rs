@@ -208,6 +208,70 @@ async fn cross_type_links_are_symmetric_and_scrubbed_on_delete() {
 }
 
 #[tokio::test]
+async fn cross_type_full_text_search() {
+    let s = state().await;
+    let db = &s.db;
+
+    ideas_repo::create_idea(
+        db,
+        "dev",
+        "Rust ownership",
+        "the borrow checker",
+        &[],
+        "inbox",
+        "published",
+        None,
+    )
+    .await
+    .unwrap();
+    ideas_repo::create_idea(
+        db,
+        "dev",
+        "Cooking",
+        "a bread recipe",
+        &[],
+        "inbox",
+        "published",
+        None,
+    )
+    .await
+    .unwrap();
+    doc_repo::create_document(
+        db,
+        "dev",
+        "Borrow guide",
+        "<p>ownership and lifetimes</p>",
+        "published",
+        None,
+    )
+    .await
+    .unwrap();
+    kn::create_project(db, "dev", "Ownership notes", "borrow semantics")
+        .await
+        .unwrap();
+
+    let results = kn::search(db, "dev", "borrow", 50).await.unwrap();
+    // The matching idea + document + project surface in their typed sections.
+    assert_eq!(
+        results.ideas.len(),
+        1,
+        "only the Rust idea matches 'borrow'"
+    );
+    assert_eq!(results.ideas[0].title, "Rust ownership");
+    assert_eq!(results.documents.len(), 1);
+    assert_eq!(results.projects.len(), 1);
+    assert!(results.files.is_empty());
+
+    // A non-matching term returns nothing.
+    let none = kn::search(db, "dev", "zzzznomatch", 50).await.unwrap();
+    assert!(none.ideas.is_empty() && none.documents.is_empty());
+
+    // Search is owner-scoped.
+    let other = kn::search(db, "bob", "borrow", 50).await.unwrap();
+    assert!(other.ideas.is_empty() && other.documents.is_empty() && other.projects.is_empty());
+}
+
+#[tokio::test]
 async fn knowledge_is_owner_scoped() {
     let s = state().await;
     let db = &s.db;
