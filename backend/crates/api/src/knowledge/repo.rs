@@ -12,7 +12,7 @@ use crate::db::Db;
 use crate::error::{AppError, AppResult};
 
 use super::model::{
-    LinkRef, LinkRow, MemberCounts, MemberItem, ProjectMembers, ProjectRow, SearchHit,
+    LinkRef, LinkRow, MemberCounts, MemberItem, ProjectMembers, ProjectRow, ReviewQueue, SearchHit,
     SearchResults, ITEM_TYPES, MEMBER_TYPES,
 };
 
@@ -255,6 +255,30 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         files: members.files.len(),
         drafts,
     })
+}
+
+// ── Review queue ──────────────────────────────────────────────────────────────
+
+/// Ideas + documents still in `review = "draft"`, newest first — what the portal
+/// review queue shows for human approval.
+pub async fn review_queue(db: &Db, owner: &str) -> AppResult<ReviewQueue> {
+    Ok(ReviewQueue {
+        ideas: drafts_of(db, owner, "idea").await?,
+        documents: drafts_of(db, owner, "document").await?,
+    })
+}
+
+async fn drafts_of(db: &Db, owner: &str, table: &str) -> AppResult<Vec<MemberItem>> {
+    let sql = format!(
+        "SELECT uuid AS id, title, review, updated_at FROM {table} \
+         WHERE owner = $owner AND review = \"draft\" ORDER BY updated_at DESC"
+    );
+    let mut res = db
+        .query(sql)
+        .bind(("owner", owner.to_string()))
+        .await?
+        .check()?;
+    Ok(res.take(0)?)
 }
 
 // ── Cross-type links ──────────────────────────────────────────────────────────

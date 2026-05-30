@@ -81,6 +81,9 @@ pub struct UpdateDocumentBody {
     pub title: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
+    /// draft|published — lets the portal approve/publish a draft.
+    #[serde(default)]
+    pub review: Option<String>,
 }
 
 /// `POST /export` — the shared conversion pathway, usable by any feature.

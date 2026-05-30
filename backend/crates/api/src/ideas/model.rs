@@ -106,6 +106,9 @@ pub struct UpdateIdeaBody {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub status: Option<String>,
+    /// draft|published — lets the portal approve/publish a draft.
+    #[serde(default)]
+    pub review: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

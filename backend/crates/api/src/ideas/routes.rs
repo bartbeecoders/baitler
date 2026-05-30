@@ -11,7 +11,8 @@ use crate::owner::CurrentOwner;
 use crate::state::AppState;
 
 use super::model::{
-    CreateIdeaBody, IdeaDetailDto, IdeaDto, IdeaSummary, LinkBody, UpdateIdeaBody, STATUSES,
+    CreateIdeaBody, IdeaDetailDto, IdeaDto, IdeaSummary, LinkBody, UpdateIdeaBody, REVIEWS,
+    STATUSES,
 };
 use super::repo;
 
@@ -157,6 +158,10 @@ async fn update(
         Some(s) => Some(clean_status(s)?),
         None => None,
     };
+    let review = match &body.review {
+        Some(r) => Some(clean_review(r)?),
+        None => None,
+    };
 
     let updated = repo::update_idea(
         db,
@@ -166,7 +171,7 @@ async fn update(
         text.as_deref(),
         tags.as_deref(),
         status.as_deref(),
-        None, // review transitions go through the publish/approve path, not generic update
+        review.as_deref(),
     )
     .await?
     .ok_or(AppError::NotFound)?;
@@ -237,6 +242,17 @@ fn clean_status(status: &str) -> AppResult<String> {
         Err(AppError::BadRequest(format!(
             "invalid status (expected one of: {})",
             STATUSES.join(", ")
+        )))
+    }
+}
+
+fn clean_review(review: &str) -> AppResult<String> {
+    if REVIEWS.contains(&review) {
+        Ok(review.to_string())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "invalid review (expected one of: {})",
+            REVIEWS.join(", ")
         )))
     }
 }

@@ -98,6 +98,13 @@ pub struct ProjectMembers {
     pub files: Vec<MemberItem>,
 }
 
+/// Pending-approval ideas + documents (review = draft) for the portal queue.
+#[derive(Debug, Default, Serialize)]
+pub struct ReviewQueue {
+    pub ideas: Vec<MemberItem>,
+    pub documents: Vec<MemberItem>,
+}
+
 /// One full-text search hit (within a typed section).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchHit {
