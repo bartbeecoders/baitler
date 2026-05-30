@@ -323,7 +323,7 @@ Phase 2). Each milestone is independently shippable.
 
 ### B — Publishing & export
 
-- [ ] **11.10** SSRF hardening of the server-side renderer (independent, highest priority — exploitable **today**
+- [x] **11.10** SSRF hardening of the server-side renderer (independent, highest priority — exploitable **today**
   via `documents_export(pdf)` and `POST /export`): network-isolate headless Chrome in `convert.rs::html_to_pdf`
   (run in a network namespace / firewalled container blocking egress except loopback-none; drop `--no-sandbox`
   where the host allows a real sandbox), and add a stricter publish-profile sanitizer that strips remote resource
