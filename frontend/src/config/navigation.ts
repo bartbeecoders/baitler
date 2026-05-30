@@ -4,6 +4,7 @@ import {
   Lightbulb,
   BarChart3,
   FileText,
+  FolderKanban,
   Sparkles,
   type LucideIcon,
 } from 'lucide-react';
@@ -48,6 +49,13 @@ export const navItems: NavItem[] = [
     icon: FileText,
     description: 'Write HTML & Markdown; export to PDF and Office.',
     phase: 7,
+  },
+  {
+    label: 'Projects',
+    path: '/projects',
+    icon: FolderKanban,
+    description: 'Group knowledge, review agent drafts, and track activity.',
+    phase: 11,
   },
   {
     label: 'Analytics',

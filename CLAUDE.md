@@ -106,7 +106,10 @@ AI (Phase 6: multi-provider chat via a Mock + OpenAI/OpenRouter/Anthropic adapte
 `LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`),
 Documents (Phase 7: TipTap HTML editor + shared conversion pathway in `src/convert.rs` —
 Markdown↔HTML, PDF via headless Chrome `CHROME_BIN`, Word via Pandoc `PANDOC_BIN` if present;
-HTML sanitized with ammonia; `POST /export` is the reusable export endpoint).
+HTML sanitized with ammonia, and `convert::harden_for_render` strips remote resources before a
+server-side render to close the SSRF surface; `POST /export` is the reusable export endpoint),
+Projects (Phase 11: lazy `ProjectsPage` portal over `knowledge/routes.rs` — Projects/Review/Activity
+tabs, draft-approval queue, provenance badges).
 No LLM egress/keys in this env — the Mock provider is the tested path; real adapters are
 compiled but unexercised. PDF export needs Chrome; Word needs Pandoc (absent here → 503).
 Set `APP_SECRET` in production.

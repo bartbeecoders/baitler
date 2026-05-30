@@ -20,12 +20,16 @@ const AiPage = lazy(() => import('@/features/ai/AiPage').then((m) => ({ default:
 const DocumentsPage = lazy(() =>
   import('@/features/documents/DocumentsPage').then((m) => ({ default: m.DocumentsPage })),
 );
+const ProjectsPage = lazy(() =>
+  import('@/features/projects/ProjectsPage').then((m) => ({ default: m.ProjectsPage })),
+);
 
 /** Feature routes that have a real implementation (others fall back to a placeholder). */
 const FEATURE_PAGES: Record<string, ReactNode> = {
   '/files': <FilesPage />,
   '/ideas': <IdeasPage />,
   '/editor': <DocumentsPage />,
+  '/projects': <ProjectsPage />,
   '/ai': <AiPage />,
 };
 

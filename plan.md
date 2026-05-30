@@ -337,12 +337,21 @@ Phase 2). Each milestone is independently shippable.
   Run synchronously inside the request/tool call (the only slow path is one Chrome invocation, already bounded to
   30s) — no job queue, no progress notifications (the JSON-response transport can't push, and an async jobs layer is
   over-engineering for a single user). Excel/PowerPoint stay deferred (structured data, not prose).
-- [ ] **11.12** Frontend (thin): a Projects page (project cards with member + draft-pending counts) and a Project
+- [x] **11.12** Frontend (thin): a Projects page (project cards with member + draft-pending counts) and a Project
   detail view that lists member documents/ideas/files grouped by type, each linking to its existing Files/Ideas/
   Documents feature page, with a provenance line ("created by claude-code") and a Draft/Published chip; a Review
   queue filtering `review=draft` ideas+documents with inline Approve (PATCH → published) and Reject/Delete (reuse the
   Phase 4 accessible ConfirmModal); an Activity timeline (`GET /activity`). Reuse the existing `MarkdownEditor` and
   `ExportMenu` (a project README exports via `POST /export`). Lazy-loaded and nav-registered like the other features.
+
+> **Milestone B shipped** (branch `phase-11-agentic`). 11.10 SSRF-hardens the renderer
+> (`harden_for_render` strips remote image sources; Chrome resolves no hostnames; `--no-sandbox`
+> gated on `CHROME_NO_SANDBOX`; Pandoc `--sandbox`). 11.11 adds `documents_publish`/`collection_export`
+> (38 MCP tools). 11.12 ships `knowledge/routes.rs` (REST: projects CRUD + membership + `GET /knowledge/search`,
+> `/review`, `/activity`; `review` accepted on PATCH /ideas + /documents) and a lazy `ProjectsPage` portal
+> (Projects/Review/Activity tabs, provenance badges). Verified: backend 98 tests + clippy/fmt; frontend
+> `tsc`/`eslint`/`vitest` (39) + `vite build`. Deferred: a live browser screenshot; logging human/portal
+> actions to `activity` (today only MCP agent actions are recorded); standalone link REST (links via MCP).
 
 ### C — MCP discoverability (additive protocol surface)
 
