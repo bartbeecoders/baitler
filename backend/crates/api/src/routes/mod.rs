@@ -24,6 +24,7 @@ pub fn router(state: AppState) -> Router {
     let ideas = crate::ideas::routes::router();
     let ai = crate::ai::routes::router();
     let documents = crate::documents::routes::router();
+    let knowledge = crate::knowledge::routes::router();
     // The MCP server reuses the same state/repos. Its routes carry their own,
     // larger body limit for Base64 tool payloads.
     let mcp =
@@ -36,6 +37,7 @@ pub fn router(state: AppState) -> Router {
         .merge(ideas)
         .merge(ai)
         .merge(documents)
+        .merge(knowledge)
         .merge(mcp)
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())

@@ -49,7 +49,7 @@ async fn create(
 ) -> AppResult<(StatusCode, Json<DocumentDto>)> {
     let title = clean_title(&body.title)?;
     let html = clean_body(body.body.as_deref().unwrap_or(""))?;
-    let doc = repo::create_document(&state.db, &owner, &title, &html).await?;
+    let doc = repo::create_document(&state.db, &owner, &title, &html, "published", None).await?;
     Ok((StatusCode::CREATED, Json(doc.into())))
 }
 
@@ -83,10 +83,21 @@ async fn update(
         Some(b) => Some(clean_body(b)?),
         None => None,
     };
+    let review = match &body.review {
+        Some(r) => Some(clean_review(r)?),
+        None => None,
+    };
 
-    let updated = repo::update_document(db, &owner, &id, title.as_deref(), html.as_deref())
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let updated = repo::update_document(
+        db,
+        &owner,
+        &id,
+        title.as_deref(),
+        html.as_deref(),
+        review.as_deref(),
+    )
+    .await?
+    .ok_or(AppError::NotFound)?;
     Ok(Json(updated.into()))
 }
 
@@ -173,6 +184,18 @@ fn clean_body(body: &str) -> AppResult<String> {
         return Err(AppError::BadRequest("document is too large".into()));
     }
     Ok(convert::sanitize(body))
+}
+
+fn clean_review(review: &str) -> AppResult<String> {
+    use crate::ideas::model::REVIEWS;
+    if REVIEWS.contains(&review) {
+        Ok(review.to_string())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "invalid review (expected one of: {})",
+            REVIEWS.join(", ")
+        )))
+    }
 }
 
 fn sanitize_filename(name: &str) -> String {

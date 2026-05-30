@@ -8,7 +8,7 @@ use crate::error::{AppError, AppResult};
 
 use super::model::DocumentRow;
 
-const DOC_SELECT: &str = "SELECT uuid, owner, title, body, version, \
+const DOC_SELECT: &str = "SELECT uuid, owner, title, body, version, review, project_id, \
     type::string(created_at) AS created_at, type::string(updated_at) AS updated_at FROM document";
 
 fn vanished() -> AppError {
@@ -20,10 +20,13 @@ pub async fn create_document(
     owner: &str,
     title: &str,
     body: &str,
+    review: &str,
+    project_id: Option<&str>,
 ) -> AppResult<DocumentRow> {
     let uuid = Uuid::new_v4().to_string();
     let sql = format!(
-        "CREATE document CONTENT {{ uuid: $uuid, owner: $owner, title: $title, body: $body }}; \
+        "CREATE document CONTENT {{ uuid: $uuid, owner: $owner, title: $title, body: $body, \
+         review: $review, project_id: $project_id }}; \
          {DOC_SELECT} WHERE owner = $owner AND uuid = $uuid"
     );
     let mut res = db
@@ -32,6 +35,8 @@ pub async fn create_document(
         .bind(("owner", owner.to_string()))
         .bind(("title", title.to_string()))
         .bind(("body", body.to_string()))
+        .bind(("review", review.to_string()))
+        .bind(("project_id", project_id.map(str::to_string)))
         .await?
         .check()?;
     let rows: Vec<DocumentRow> = res.take(1)?;
@@ -66,6 +71,7 @@ pub async fn update_document(
     uuid: &str,
     title: Option<&str>,
     body: Option<&str>,
+    review: Option<&str>,
 ) -> AppResult<Option<DocumentRow>> {
     let mut sets: Vec<&str> = Vec::new();
     if title.is_some() {
@@ -74,11 +80,17 @@ pub async fn update_document(
     if body.is_some() {
         sets.push("body = $body");
     }
+    if review.is_some() {
+        sets.push("review = $review");
+    }
     if sets.is_empty() {
         return get_document(db, owner, uuid).await;
     }
-    // Bump the version counter on every content change.
-    sets.push("version = version + 1");
+    // Bump the version counter on a content edit (not on a review-only change,
+    // so publishing doesn't masquerade as an edit).
+    if title.is_some() || body.is_some() {
+        sets.push("version = version + 1");
+    }
 
     let sql = format!(
         "UPDATE document SET {} WHERE owner = $owner AND uuid = $uuid; \
@@ -95,6 +107,9 @@ pub async fn update_document(
     if let Some(b) = body {
         query = query.bind(("body", b.to_string()));
     }
+    if let Some(r) = review {
+        query = query.bind(("review", r.to_string()));
+    }
     let mut res = query.await?.check()?;
     let rows: Vec<DocumentRow> = res.take(1)?;
     Ok(rows.into_iter().next())
@@ -104,6 +119,8 @@ pub async fn delete_document(db: &Db, owner: &str, uuid: &str) -> AppResult<bool
     if get_document(db, owner, uuid).await?.is_none() {
         return Ok(false);
     }
+    // Scrub cross-type knowledge links (Phase 11) pointing at this document.
+    crate::knowledge::repo::scrub_item_links(db, owner, "document", uuid).await?;
     db.query("DELETE document WHERE owner = $owner AND uuid = $uuid")
         .bind(("owner", owner.to_string()))
         .bind(("uuid", uuid.to_string()))

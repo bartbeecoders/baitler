@@ -9,6 +9,10 @@ pub struct DocumentRow {
     pub title: String,
     pub body: String,
     pub version: i64,
+    /// Draft/published gate (Phase 11). See `ideas::model::REVIEWS`.
+    pub review: String,
+    /// Project this document belongs to, if any (Phase 11 membership pointer).
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -19,6 +23,8 @@ pub struct DocumentDto {
     pub title: String,
     pub body: String,
     pub version: i64,
+    pub review: String,
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -30,6 +36,8 @@ impl From<DocumentRow> for DocumentDto {
             title: r.title,
             body: r.body,
             version: r.version,
+            review: r.review,
+            project_id: r.project_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -42,6 +50,8 @@ pub struct DocumentSummary {
     pub id: String,
     pub title: String,
     pub version: i64,
+    pub review: String,
+    pub project_id: Option<String>,
     pub updated_at: String,
 }
 
@@ -51,6 +61,8 @@ impl From<DocumentRow> for DocumentSummary {
             id: r.uuid,
             title: r.title,
             version: r.version,
+            review: r.review,
+            project_id: r.project_id,
             updated_at: r.updated_at,
         }
     }
@@ -69,6 +81,9 @@ pub struct UpdateDocumentBody {
     pub title: Option<String>,
     #[serde(default)]
     pub body: Option<String>,
+    /// draft|published — lets the portal approve/publish a draft.
+    #[serde(default)]
+    pub review: Option<String>,
 }
 
 /// `POST /export` — the shared conversion pathway, usable by any feature.

@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 fn test_config() -> Config {
     Config {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        cors_allowed_origins: vec!["http://localhost:5173".to_string()],
+        cors_allowed_origins: vec!["http://localhost:8100".to_string()],
         db_timeout: Duration::from_secs(5),
         surreal: SurrealConfig {
             url: "memory".to_string(),
@@ -306,10 +306,10 @@ async fn owner_scoping_isolates_ideas() {
     let (_base, state) = spawn().await;
     let db = &state.db;
 
-    let alice = repo::create_idea(db, "alice", "A", "", &[], "inbox")
+    let alice = repo::create_idea(db, "alice", "A", "", &[], "inbox", "published", None)
         .await
         .unwrap();
-    repo::create_idea(db, "bob", "B", "", &[], "inbox")
+    repo::create_idea(db, "bob", "B", "", &[], "inbox", "published", None)
         .await
         .unwrap();
 

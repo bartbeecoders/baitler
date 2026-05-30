@@ -25,13 +25,48 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+use crate::activity;
 use crate::config::McpConfig;
+use crate::owner::DEV_OWNER;
 use crate::state::AppState;
 
 use tools::ToolError;
 
 /// Server identity reported in `initialize`.
 const SERVER_NAME: &str = "baitler";
+
+/// Who is making a tool call: the resource `owner` plus an optional `agent`
+/// label (from the `X-Baitler-Agent` header) used for provenance/activity.
+///
+/// Until Phase 2 auth lands, `owner` is always [`DEV_OWNER`]; the auth phase
+/// replaces only how this is resolved, and every tool inherits per-user scoping.
+pub(crate) struct Actor {
+    pub owner: String,
+    pub agent: Option<String>,
+}
+
+/// Resolve the calling actor from request headers. The agent label is sanitized
+/// to a short, printable token so it's safe to store and log.
+fn resolve_actor(headers: &HeaderMap) -> Actor {
+    let agent = headers
+        .get("x-baitler-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(sanitize_agent)
+        .filter(|s| !s.is_empty());
+    Actor {
+        owner: DEV_OWNER.to_string(),
+        agent,
+    }
+}
+
+/// Keep an agent label to a short run of printable, non-control characters.
+fn sanitize_agent(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect()
+}
 
 /// Build the `/mcp` router. When MCP is disabled, this is an empty router (the
 /// endpoint simply doesn't exist, and unmatched `/mcp` falls through to the
@@ -83,6 +118,9 @@ async fn handle(
         }
     };
 
+    // Resolve the calling actor (owner + agent label) once per request.
+    let actor = resolve_actor(&headers);
+
     match value {
         Value::Array(items) => {
             if items.is_empty() {
@@ -94,7 +132,7 @@ async fn handle(
             }
             let mut responses = Vec::new();
             for item in items {
-                if let Some(resp) = dispatch(&state, item).await {
+                if let Some(resp) = dispatch(&state, &actor, item).await {
                     responses.push(resp);
                 }
             }
@@ -104,7 +142,7 @@ async fn handle(
                 json_response(Value::Array(responses))
             }
         }
-        single => match dispatch(&state, single).await {
+        single => match dispatch(&state, &actor, single).await {
             Some(resp) => json_response(resp),
             None => accepted(),
         },
@@ -113,7 +151,7 @@ async fn handle(
 
 /// Dispatch one JSON-RPC message. Returns `Some(response)` for requests and
 /// `None` for notifications (which get no reply).
-async fn dispatch(state: &AppState, msg: Value) -> Option<Value> {
+async fn dispatch(state: &AppState, actor: &Actor, msg: Value) -> Option<Value> {
     let obj = match msg.as_object() {
         Some(o) => o,
         // A non-object message can't carry an id; nothing to respond to.
@@ -136,7 +174,7 @@ async fn dispatch(state: &AppState, msg: Value) -> Option<Value> {
 
     // tools/call has its own error mapping (tool errors → isError results).
     if method == "tools/call" {
-        return Some(handle_tools_call(state, id, &params).await);
+        return Some(handle_tools_call(state, actor, id, &params).await);
     }
 
     let result: Result<Value, (i64, String)> = match method {
@@ -170,16 +208,25 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Baitler personal-assistant API as MCP tools: manage ideas, HTML \
-                         documents, files/folders, convert & export content, and run LLM chat \
-                         through configured providers. Call tools/list to see all tools.",
+        "instructions": "Baitler is a personal knowledge base exposed as MCP tools. The loop: \
+                         ORGANISE — create a project (projects_create), then add ideas \
+                         (Markdown) and HTML documents under it (ideas_create/documents_create \
+                         with project_id) and connect related items with knowledge_link; \
+                         RETRIEVE — answer questions by knowledge_search across the base, then \
+                         ground a reply with ai_chat; EXPORT — turn documents into pdf/docx/\
+                         markdown/html via documents_export/export, or save a rendered artifact as \
+                         a file with documents_publish / collection_export. Agent-authored ideas & \
+                         documents default to review=draft for human approval; set \
+                         review=published to skip the queue. Files/folders hold binary assets. \
+                         Send an X-Baitler-Agent header so your actions are attributed in \
+                         activity_list. Call tools/list for the full schema.",
     })
 }
 
 /// Execute a `tools/call`, mapping tool outcomes to MCP result semantics:
 /// success → `content` text; tool/validation errors → `isError: true` result;
 /// unknown tool → JSON-RPC method-not-found.
-async fn handle_tools_call(state: &AppState, id: Value, params: &Value) -> Value {
+async fn handle_tools_call(state: &AppState, actor: &Actor, id: Value, params: &Value) -> Value {
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return protocol::error(id, protocol::INVALID_PARAMS, "missing tool `name`");
     };
@@ -188,8 +235,24 @@ async fn handle_tools_call(state: &AppState, id: Value, params: &Value) -> Value
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    match tools::call(state, name, &args).await {
-        Ok(value) => protocol::success(id, tool_ok(value)),
+    match tools::call(state, &actor.owner, name, &args).await {
+        Ok(value) => {
+            // Record provenance for mutating tools (best-effort; never fail the
+            // call because the audit write hiccupped).
+            if let Some(entry) = activity::entry_for(name, &value) {
+                if let Err(e) = activity::record(
+                    &state.db,
+                    &actor.owner,
+                    actor.agent.as_deref(),
+                    &entry.as_new(),
+                )
+                .await
+                {
+                    tracing::warn!(tool = name, error = %e, "mcp activity log failed");
+                }
+            }
+            protocol::success(id, tool_ok(value))
+        }
         Err(ToolError::UnknownTool) => protocol::error(
             id,
             protocol::INVALID_PARAMS,

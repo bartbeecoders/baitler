@@ -18,7 +18,7 @@ use reqwest::header::{
 use reqwest::{Client, Method, StatusCode};
 use tokio::net::TcpListener;
 
-const ALLOWED_ORIGIN: &str = "http://localhost:5173";
+const ALLOWED_ORIGIN: &str = "http://localhost:8100";
 
 /// Build a `Config` pointing at an isolated in-memory datastore.
 fn test_config() -> Config {

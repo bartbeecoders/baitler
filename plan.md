@@ -243,13 +243,13 @@ Phase 2). Each milestone is independently shippable.
 
 ### A — Knowledge model, search, activity, MVP loop
 
-- [ ] **11.1** Capability gate (blocking, do first): with a throwaway query against both the `kv-mem`
+- [x] **11.1** Capability gate (blocking, do first): with a throwaway query against both the `kv-mem`
   (tests) and `kv-rocksdb` (dev) engines, confirm the pinned `surrealdb` 2 build executes
   `DEFINE ANALYZER … TOKENIZERS class FILTERS lowercase,ascii` and `DEFINE INDEX … SEARCH ANALYZER … BM25`
   over an already-populated table inside a migration's `BEGIN/COMMIT`. Block 11.4/11.5 on this; if `SEARCH`
   is unavailable on the embedded engine, fall back to the existing `string::lowercase(...) CONTAINS`
   approach (as `ideas_repo::list_ideas` already does) and drop the analyzer.
-- [ ] **11.2** Migration `0006_knowledge.surql` (SCHEMAFULL, mirroring `0003_ideas.surql`). Define `project`:
+- [x] **11.2** Migration `0006_knowledge.surql` (SCHEMAFULL, mirroring `0003_ideas.surql`). Define `project`:
   `uuid` (UNIQUE index `project_uuid`), `owner`, `name`, `slug` (composite UNIQUE `project_slug` ON owner,slug),
   `summary` (Markdown DEFAULT ""), `status` DEFAULT "active" (active|archived), `created_at` DEFAULT
   `time::now()`, `updated_at` VALUE `time::now()`; index `project_owner` ON owner,status. Define one polymorphic
@@ -259,7 +259,7 @@ Phase 2). Each milestone is independently shippable.
   `kn_member_owner` ON owner,kind and `kn_member_src` ON owner,src_type,src_id and `kn_member_dst` ON
   owner,dst_type,dst_id. Files are members-only (no file↔file links); constrain `dst_type` validation to the
   four types that matter.
-- [ ] **11.3** Add a `review` field (draft|published, DEFAULT "published") to `idea` and `document` in the same
+- [x] **11.3** Add a `review` field (draft|published, DEFAULT "published") to `idea` and `document` in the same
   migration, plus optional `project_id` (`option<string>`, DEFAULT NONE) on `idea`, `document`, and `file`.
   Existing rows default `review="published"` so nothing already captured is hidden; agent writes pass
   `review="draft"` explicitly, human/portal writes default to published. Do NOT overload the existing closed
@@ -267,13 +267,13 @@ Phase 2). Each milestone is independently shippable.
   stays untouched. Add the new fields to the SCHEMAFULL migration, the `CREATE CONTENT`/`UPDATE SET` builders in
   `ideas/repo.rs` and `documents/repo.rs`, and `IdeaDto`/`DocumentDto`. Add a `document_review` index for the
   review-queue/publish queries.
-- [ ] **11.4** Migration `0007_search.surql`: a `kn_text` analyzer and `SEARCH` (BM25) indexes over already-existing
+- [x] **11.4** Migration `0007_search.surql`: a `kn_text` analyzer and `SEARCH` (BM25) indexes over already-existing
   prose — `idea(title,body)`, `document(title,body)`, `project(name,summary)`, `file(name)` — gated on 11.1. No
   schema change to the indexed tables. Add `doc_repo::search_documents` and `knowledge::repo::search` running a
   per-type `@@`/`search::score()` query per table and returning **typed sections** each internally ranked, ordered
   overall by a stable secondary key (`updated_at`); do not promise a fake unified cross-table relevance rank.
   Snippets via `search::highlight()` or a manual substring around the match.
-- [ ] **11.5** New `knowledge/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `ideas/` verbatim. Project
+- [x] **11.5** New `knowledge/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `ideas/` verbatim. Project
   CRUD (`PROJECT_SELECT` projection, owner-scoped, slug generated from `name` with `-2` collision suffix).
   Membership/link repo: `add_member`/`remove_member`/`list_members(project, type?)`; `link_items`/`unlink_items`
   written as BOTH directed `kn_member kind='link'` rows (mirroring `link_ideas`' symmetric write — never a
@@ -281,14 +281,14 @@ Phase 2). Each milestone is independently shippable.
   **both** endpoints exist and are owner-owned before inserting an edge (mirror `ideas_link`'s existence checks).
   Wire a `kn_member` scrub into `delete_idea`/`delete_document`/`delete_file` (and `delete_project` removes
   memberships only, never the underlying items) — mirroring the Phase 5 link-scrub-on-delete precedent.
-- [ ] **11.6** Thread attribution: resolve an `Actor { owner, agent: Option<String> }` once in `mcp::mod.rs::handle`
+- [x] **11.6** Thread attribution: resolve an `Actor { owner, agent: Option<String> }` once in `mcp::mod.rs::handle`
   (the only function with headers) and pass it as a parameter through `dispatch` → `handle_tools_call` →
   `tools::call(state, &actor, name, args)`, changing those signatures and the per-tool fns to read `&actor.owner`
   in place of the `DEV_OWNER` literals. The default for the open/legacy path is `Actor { owner: DEV_OWNER,
   agent: None }`, so the refactor is behaviour-preserving. The agent label comes from an optional `X-Baitler-Agent`
   header (or a per-token label once 11.13 lands) — no agent table required for v1. This single seam is the
   prerequisite for activity attribution and the Phase 2 owner swap.
-- [ ] **11.7** Migration `0008_activity.surql`: append-only `activity` table — `uuid` UNIQUE, `owner`, `agent`
+- [x] **11.7** Migration `0008_activity.surql`: append-only `activity` table — `uuid` UNIQUE, `owner`, `agent`
   (`option<string>`, NONE = human/web), `action` (e.g. idea.create, document.publish, file.delete), `target_type`,
   `target_id`, `target_title`, `project_id` (`option<string>`), `summary`, `created_at`; index `activity_owner` ON
   owner,created_at. A central helper appended at the end of each **mutating** write tool
@@ -296,7 +296,7 @@ Phase 2). Each milestone is independently shippable.
   `folders_create`, `projects_*`); read tools log nothing. Wrap the content write + activity insert in one
   SurrealDB transaction so "exactly one activity row per write" holds under failure (else document it as
   best-effort). Never persist tool argument bodies verbatim — a derived summary + target id only.
-- [ ] **11.8** New MCP tools (each owner-scoped via `&actor.owner`, mirroring `ideas_*` validation helpers):
+- [x] **11.8** New MCP tools (each owner-scoped via `&actor.owner`, mirroring `ideas_*` validation helpers):
   `projects_{list,get,create,update,delete}` (`projects_get` resolves member counts + typed summaries);
   `projects_add_item`/`projects_remove_item` (set/clear membership for an idea/document/file); `knowledge_link`/
   `knowledge_unlink` (generic cross-type edge); `knowledge_backlinks`; `knowledge_search` (typed, ranked hits
@@ -304,7 +304,7 @@ Phase 2). Each milestone is independently shippable.
   `activity_list` (filter by project/agent/since). Extend existing `ideas_{create,update}` and
   `documents_{create,update}` schemas with optional `project_id` and `review` args. Update the `call()` match, the
   `known` name list, and the `assert_eq!` count in `mcp/tools.rs` in the same commit.
-- [ ] **11.9** Offline end-to-end acceptance test driving the JSON-RPC surface as an agent would, no egress:
+- [x] **11.9** Offline end-to-end acceptance test driving the JSON-RPC surface as an agent would, no egress:
   `initialize` → `tools/list` → `folders_create` → `files_write` → `ideas_create` (review=draft) →
   `projects_create` + `projects_add_item` → `documents_create` (review=draft) → `knowledge_link` →
   `knowledge_search` (asserts the seeded items rank) → `documents_export` format=markdown/html (asserts bytes) →
@@ -312,15 +312,24 @@ Phase 2). Each milestone is independently shippable.
   sources and per-source chars) before folding into `build_system`. PDF/DOCX assertions stay conditional on
   `CHROME_BIN`/`PANDOC_BIN`, as the Phase 7 tests already are.
 
+> **Milestone A shipped** (branch `phase-11-agentic`, PR #1; backend green: 94 tests, clippy/fmt).
+> As-built deltas from the design above: membership is the direct `project_id` pointer + a dedicated
+> **`kn_link`** link table (instead of one `kn_member` table with `kind ∈ {member,link}`) — simpler,
+> indexed member queries, one link system. The FTS analyzer and SEARCH indexes are split across
+> migrations `0007`/`0008` (the runner wraps each file in one transaction and an index can't reference
+> an analyzer defined in the same uncommitted txn — verified with throwaway probes); activity is
+> migration `0009`. `knowledge/routes.rs` (REST) is deferred to 11.12 with the portal; the MCP tools
+> are the agentic interface. Activity logging is best-effort (not in the write's transaction).
+
 ### B — Publishing & export
 
-- [ ] **11.10** SSRF hardening of the server-side renderer (independent, highest priority — exploitable **today**
+- [x] **11.10** SSRF hardening of the server-side renderer (independent, highest priority — exploitable **today**
   via `documents_export(pdf)` and `POST /export`): network-isolate headless Chrome in `convert.rs::html_to_pdf`
   (run in a network namespace / firewalled container blocking egress except loopback-none; drop `--no-sandbox`
   where the host allows a real sandbox), and add a stricter publish-profile sanitizer that strips remote resource
   loads (external `<img>/<iframe>/<link>`, `srcset`, oversized `data:` URIs) before any render. Document
   `CHROME_NETNS`/sandbox env in `.env.example`. Keep the existing 30s timeout + output-size cap.
-- [ ] **11.11** `documents_publish` and `collection_export` reusing the shared pathway: render a document (or a
+- [x] **11.11** `documents_publish` and `collection_export` reusing the shared pathway: render a document (or a
   project's ordered member documents concatenated with a title page + combined TOC) to a self-contained, sanitized
   HTML / Markdown / PDF / DOCX artifact via `convert::export` (unchanged), and persist it as an owner-scoped file —
   mirroring `files_write`'s full pattern (`storage.put(key, bytes)` AND `files_repo::create_file(...)` with
@@ -328,12 +337,21 @@ Phase 2). Each milestone is independently shippable.
   Run synchronously inside the request/tool call (the only slow path is one Chrome invocation, already bounded to
   30s) — no job queue, no progress notifications (the JSON-response transport can't push, and an async jobs layer is
   over-engineering for a single user). Excel/PowerPoint stay deferred (structured data, not prose).
-- [ ] **11.12** Frontend (thin): a Projects page (project cards with member + draft-pending counts) and a Project
+- [x] **11.12** Frontend (thin): a Projects page (project cards with member + draft-pending counts) and a Project
   detail view that lists member documents/ideas/files grouped by type, each linking to its existing Files/Ideas/
   Documents feature page, with a provenance line ("created by claude-code") and a Draft/Published chip; a Review
   queue filtering `review=draft` ideas+documents with inline Approve (PATCH → published) and Reject/Delete (reuse the
   Phase 4 accessible ConfirmModal); an Activity timeline (`GET /activity`). Reuse the existing `MarkdownEditor` and
   `ExportMenu` (a project README exports via `POST /export`). Lazy-loaded and nav-registered like the other features.
+
+> **Milestone B shipped** (branch `phase-11-agentic`). 11.10 SSRF-hardens the renderer
+> (`harden_for_render` strips remote image sources; Chrome resolves no hostnames; `--no-sandbox`
+> gated on `CHROME_NO_SANDBOX`; Pandoc `--sandbox`). 11.11 adds `documents_publish`/`collection_export`
+> (38 MCP tools). 11.12 ships `knowledge/routes.rs` (REST: projects CRUD + membership + `GET /knowledge/search`,
+> `/review`, `/activity`; `review` accepted on PATCH /ideas + /documents) and a lazy `ProjectsPage` portal
+> (Projects/Review/Activity tabs, provenance badges). Verified: backend 98 tests + clippy/fmt; frontend
+> `tsc`/`eslint`/`vitest` (39) + `vite build`. Deferred: a live browser screenshot; logging human/portal
+> actions to `activity` (today only MCP agent actions are recorded); standalone link REST (links via MCP).
 
 ### C — MCP discoverability (additive protocol surface)
 
@@ -380,6 +398,53 @@ Phase 2). Each milestone is independently shippable.
 > "downloadable owner-scoped file in the portal," and the new REST routes inherit the same localhost-only-until-auth
 > caveat as the rest of the API.
 
+## Phase 12 — Web page hosting (publish pages at a URL)
+
+Goal: turn Baitler's Phase 11 "publishing = a downloadable owner-scoped file" into the deferred **URL-addressable served page** — author a page from Markdown/HTML, publish it, and share it via a stable public link `GET /p/{slug}`, with pages organised in folders, searched, and filtered.
+
+Vision: "Host web pages on Baitler." A page is authored like a Phase 7 document (TipTap HTML or imported Markdown, sanitized through the one `convert.rs` pathway) and filed in the Phase 4 folder tree, but unlike a document it can be **published to a served URL** rather than only exported to a file. Pages reuse everything already built — `convert.rs` (`md_to_html`/`sanitize`/`harden_for_render`), the Phase 4 `folder` hierarchy and the secure-download header posture, the Phase 11 `kn_text` full-text search and `activity` provenance log, the MCP `Actor`/owner seam and tool/drift-guard conventions — so this phase is **additive**, not a re-implementation. The agentic loop the Phase 11 brief called for ("agents make web pages so knowledge is human-readable") gets its natural endpoint: an agent authors a page over MCP and `pages_publish` hands back a shareable URL.
+
+Architecture: one new `page` table — a document-like row distinct from `document` (it adds a `slug`, a `visibility` draft|unlisted|public gate, a `source_format`, a `folder_id` reusing the Phase 4 `folder` tree, and a `project_id` membership pointer; it is **not** a `document` with extra flags, and **not** a new folder system) — a new `pages/` module mirroring `documents/`/`knowledge/` verbatim (model/repo/routes), a new **public render module** that serves the stored sanitized HTML at `GET /p/{slug}`, additive `pages_*` MCP tools, a page SEARCH index pair folded into `knowledge_search`, and a lazy `PagesPage` portal. No existing table or repo is rewritten; the only edits to existing code are additive (router wiring, the `knowledge` whitelists, a `delete_page` link scrub, two `activity::entry_for` arms, and lifting the slug helpers — see 12.1). **Decisions taken up front:** (a) a page is a *separate table from `document`*, sharing only `convert.rs`, because their lifecycles diverge (a document is a private, export-oriented editing workspace with a per-save `version`; a page is a slug-addressed, publishable, visibility-gated artifact) — coupling them would bloat `document` with publish-only columns and entangle its version logic; a one-way `from_document` promote path is the only bridge. (b) Pages *reuse the Phase 4 `folder` table* via `folder_id` exactly like `file.folder_id` — one shared owner-scoped hierarchy with the existing breadcrumbs/move/cycle-guards, no second tree and no "site" container (a multi-page grouping, if ever needed, is a Phase 11 `project`, not a new entity).
+
+### Security reality (read before B) — this is the whole risk of the phase
+
+- **Serving user/agent-authored HTML at a public URL is the headline risk.** A served page is attacker-controllable HTML, and an agent can author a *malicious draft* (over `pages_create`) before any human looks. The stored `body` is sanitized with `convert::sanitize` (ammonia, scripts/handlers stripped) on **every write** — the same invariant documents already hold, so an owner-facing preview never renders unsanitized markup — and the public serve path **additionally** runs `convert::harden_for_render` over the body so remote `<img>`/`srcset` and resource-loading tags are stripped before the bytes reach a viewer. Defense-in-depth is mandatory because once Phase 2 ships cookies, an XSS on a same-origin page steals the session.
+- **Origin isolation + a no-script CSP are the load-bearing controls, not the sanitizer alone.** `convert::sanitize` keeps `<a href>` and (without harden) http(s) `<img>`; the durable protection is **serving `/p/*` from a separate origin** (a distinct `PUBLIC_PAGE_ORIGIN`, e.g. `*.pages.baitler.com` or a cookie-path-isolated host) so a page can never read the app's auth cookie, **plus** a strict response CSP whose `default-src 'none'` blocks scripts even if a sanitizer bypass ever lands. The `sandbox` directive (no `allow-scripts`, no `allow-same-origin`) already forces each page into an opaque, cookieless origin in the browser — so same-origin serving is *survivable* pre-auth, but the separate origin is a **hard Phase-2 blocker**: **Phase 2 must not set an auth cookie on any origin that also serves `/p/*`.**
+- **SSRF is a viewer-side, not server-side, concern here — and is already solved upstream; reuse it.** There is **no server-side headless render on the serve path** (we serve stored HTML, never a per-request Chrome render), so the serve route adds zero server-side SSRF surface. `harden_for_render` at serve time stops a *viewer's* browser from fetching an internal-host `<img>` an agent embedded. The only server-side render in a page's life is at publish-time PDF/DOCX export, which already inherits `convert.rs`'s Chrome DNS-block + sandbox hardening (Phase 11.10) and is owner-triggered, never anonymous.
+- **`data:` URIs and `<a>` links are the two residual content vectors the CSP must backstop.** `harden_for_render` keeps `data:` image URIs (so authors inline images) and keeps `<a href>`. A `data:image/svg+xml` does not execute in an `<img>` context, and `default-src 'none'; sandbox` neutralizes script regardless — but the CSP is the backstop, so it is asserted byte-for-byte in a test. `<a>` links survive, so a published page is inherently a possible phishing/redirect host; for a single-owner personal app this is an accepted risk (the owner authors their own pages), called out rather than over-engineered away.
+- **No CSRF/auth surface on the public GET.** `/p/{slug}` is a pure read of `visibility ∈ {unlisted, public}` rows; it takes no cookies, no `Authorization`, and must **not** inherit the credentialed CORS layer. Today `routes/mod.rs` applies one `CorsLayer` (`allow_credentials(true)`) via `.layer(cors)` over the *whole* router — so the public router is a concrete wiring change, built as its own `Router` and merged **outside** that layer and outside any future Phase 2 auth middleware (see 12.5). The `CurrentOwner` extractor is intentionally absent from the serve handler, so the owner-less public read can never silently scope to `DEV_OWNER`.
+- **Slug enumeration / privacy.** `unlisted` = link-knowers only (unguessable slug, `noindex`); `public` = also indexable. Slugs are owner-scoped-unique; for `unlisted`, the slug generator appends entropy so links aren't guessable. `draft`/missing both return **404** (the codebase has no 403 variant, so this is automatic) so existence is never confirmed. Send `X-Robots-Tag: noindex` for `unlisted`. `unlisted` is *obscurity, not access control* (the URL lands in browser history) — stated plainly.
+- **Pre-auth caveat (state it crisply).** Until Phase 2, every authoring tool resolves the one `DEV_OWNER`, so "shared with others" means "anyone with the link can view"; there is no per-recipient ACL and no second user to share *to*. **`filter by author` is near-trivial today — there is exactly one owner** — so the list endpoint *accepts* the `author` param but it is a documented no-op until Phase 2; **no `created_by` column is added** (SurrealDB is SCHEMAFULL with `DEFINE FIELD … IF NOT EXISTS`, so the auth phase adds it in one line when it does something).
+- **Over-engineering to avoid (personal app):** a published-snapshot column (`published_html`/`published_version`), a `share_token` + rotation lifecycle, a `site`/template/theme engine, a `page_asset` table + asset-serving route (images are inlined `data:` URIs — `harden_for_render` guarantees no `<img src='self'>` can ever be populated), a `tags`/`created_by` column, an in-process per-IP rate limiter or `AppError::TooManyRequests` (rate limiting stays a Phase 10 item), ETag/CDN/edge caching, page versioning/history, async publish jobs, and an old-slug→new-slug redirect table. Serve synchronously from the DB; a stored-HTML read + one `harden_for_render` pass (string-level, bounded by the `MAX_BODY` write cap) is fast.
+
+### A — Page model + authoring + owner-only management (ships now, no public surface)
+
+- [ ] **12.1** Prerequisite refactor + migration `0010_pages.surql` (SCHEMAFULL, mirroring `0005_documents.surql` + `0006`'s slug conventions). First, **lift the slug helpers out of `knowledge/repo.rs`**: make `slugify` `pub` (default fallback word parameterized, not hardcoded `"project"`) and generalize `unique_slug` to take a table name (it currently hardcodes `FROM project`) — move both into a small shared `src/slug.rs` (or `pub`-export them) so projects and pages share one collision-suffix generator; this is a real edit to `knowledge/repo.rs`, owned here. Then define `page`: `uuid` (UNIQUE `page_uuid`), `owner`, `title`, `body` (sanitized HTML, DEFAULT ""), `slug` (composite UNIQUE `page_slug` ON owner,slug), `visibility` DEFAULT "draft" (draft|unlisted|public), `source_format` DEFAULT "html" (html|markdown — remembered so the editor round-trips), `folder_id` `option<string>` DEFAULT NONE (**reuses the Phase 4 `folder` table** — no new folder type), `project_id` `option<string>` DEFAULT NONE (Phase 11 membership pointer, so a page can join a project and be cross-linked via `kn_link`), `version` int DEFAULT 1, `published_at` `option<datetime>` DEFAULT NONE, `created_at`/`updated_at`. Indexes: `page_owner` ON owner,visibility, `page_folder` ON owner,folder_id, `page_project` ON owner,project_id. Add `page` to the `MEMBER_TYPES`/`ITEM_TYPES` whitelists in `knowledge/model.rs` and extend `set_membership`/`project_members`/`delete_project`'s member loop so pages are first-class in projects/links/scrub-on-delete (without this, `scrub_item_links(…, "page", …)` fails the `any_table` whitelist). Extend `folder_is_empty` to also count pages so a folder holding a page can't be wrongly deleted.
+- [ ] **12.2** New `pages/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `documents/` verbatim where it overlaps and owning the net-new surface where it doesn't (documents have **no** slug/visibility/publish — slug generation, owner-unique collision handling, the visibility state machine, and publish/unpublish are new logic). `PageRow`/`PageDto`/`PageSummary` (the summary omits `body` for payload size; `PageDto` carries `public_url` — populated by the serving facet from `PUBLIC_PAGE_ORIGIN` when published, empty for drafts — so the frontend/agent get a usable share link); const slices `SOURCE_FORMATS`/`VISIBILITIES` for literal validation (mirroring `PROJECT_STATUSES`). Owner-scoped CRUD with a `PAGE_SELECT` projection; slug generated from `title` via the lifted `slugify`+`unique_slug` (with extra entropy appended for `unlisted`, see 12.6); **body sanitized via `convert::sanitize` on every write** (same as documents — so any draft preview is already safe); Markdown `source` paths through `convert::md_to_html` before `sanitize`; `version` bumps on a content edit but not a visibility-only change (mirror `documents/repo.rs`); a `MAX_BODY` (5 MB, mirroring `documents/routes.rs`) cap on writes. `create_page` accepts an optional `from_document` (copies a document's sanitized body into a new `source_format='html'` page — the one-way promote bridge, no second editor). `get_page_by_slug` (owner-scoped variant; the serving facet adds the unauthenticated one). Wire a `kn_link` scrub into `delete_page` (mirror `delete_document`).
+- [ ] **12.3** Owner-scoped REST in `pages/routes.rs`, merged into the **auth-gated** router tree (behind `CurrentOwner`, alongside `/documents`): `GET/POST /pages`, `GET/PATCH/DELETE /pages/{id}`, `POST /pages/{id}/publish` (sets `visibility`, stamps `published_at`, returns the page DTO **with its absolute `public_url`**), `POST /pages/{id}/unpublish` (→ draft, immediately 404s `/p/{slug}`). `PATCH` accepts `title`/`body`/`source_format`/`slug`/`visibility`/`folder_id`/`project_id` (a custom `slug` is re-validated to the slugify charset and re-checked owner-unique; visibility folds in here, mirroring how `documents_update` takes `review` inline — no separate `/visibility` endpoint). Listing supports `folder`, `visibility`, `q` (case-insensitive name/body `CONTAINS` fallback like `ideas_repo::list_ideas`), `project`, and `updated_at` ordering with pagination — mirroring the `files` list params (`MAX_LIMIT`/`DEFAULT_LIMIT` from `files/routes.rs`). The `author` filter param is accepted but resolves to the one owner pre-auth (documented Phase-2 no-op; no new column). Reuse the Phase 7 `POST /export` for "export this page as PDF/Word/MD" — no new export code.
+- [ ] **12.4 (tests-with-features)** Backend integration `tests/pages.rs`: page CRUD + owner isolation (two synthetic owners, mirror `documents.rs`/`files.rs`), slug uniqueness + collision suffix + custom-slug re-validation, `sanitize` strips a `<script>`/`onerror` on write (asserted on the stored `body`), visibility transitions (draft→public→unlisted→draft), `version` bumps on a content edit but not a visibility flip, folder filing + folder filter + folder-not-empty-with-page, `q` search, `from_document` promote copies the body, project membership + `kn_link` scrub-on-delete, and the `public_url` field on publish. All on the embedded `kv-mem` engine, ephemeral ports — no egress.
+
+### B — Public serving + visibility/sharing (the deferred public surface)
+
+- [ ] **12.5** Public render module `pages/public.rs` + router `GET /p/{slug}`, **wired outside the credentialed CORS layer and the auth-gated tree**. Concretely: restructure `routes/mod.rs` so the public router is built as its own `Router` and merged so the global `.layer(cors)` (currently blanketing every route) and any future Phase 2 auth middleware never apply to it — the serve handler takes **no `CurrentOwner` extractor**. Resolve `slug` to a row with `visibility ∈ {unlisted, public}` (draft/missing → `404`, never confirming existence). Run `convert::harden_for_render` over the stored (already-sanitized) `body` at serve time (strips any remote `<img>` an agent embedded → no viewer-side fetch to internal hosts), wrap it in a minimal self-contained HTML document with an inline stylesheet (export `convert.rs`'s `PRINT_CSS` as `pub`, or duplicate a minimal CSS in `pages/public.rs` — `harden_for_render` cannot run over a full `<!doctype>` document, so the harden pass runs on the **fragment** first, then the fragment is wrapped), and return it with the locked-down header set below. Owner-scoping is intentionally absent on this read — a public page is public — but the *row* still carries its owner for the eventual Phase 2 per-user surface. The serve handler writes **no `activity` row** (the read is anonymous; provenance lives on the authoring tools).
+- [ ] **12.6** Security headers + origin isolation on `/p/*` (the core of the phase). Response carries: `Content-Type: text/html; charset=utf-8`; a strict CSP — `default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox` (bare `sandbox`, no `allow-*` — no `allow-popups`, so author links can't `window.open` an attacker origin; `img-src data:` only, since `harden_for_render` guarantees no remote/`'self'` image source survives); `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer`; and `X-Robots-Tag: noindex` for `unlisted` (public pages stay indexable). For `unlisted` responses also send `Cache-Control: private, no-store` so an intermediary never retains the secret-URL content. Add `PUBLIC_PAGE_ORIGIN` config (documented in `.env.example`) so `/p/*` can be served from a **distinct origin** from the app/cookies; the publish-time `public_url` builder reads it (falls back to the API origin in single-host dev, where the `sandbox` opaque-origin CSP is the active protection and the separate origin is the documented Phase-2 gate). For `unlisted`, append slug entropy in the slug generator so links aren't enumerable.
+- [ ] **12.7 (tests-with-features, secure-serving tests)** Extend `tests/pages.rs`: `GET /p/{slug}` returns `200` + the body for public/unlisted and `404` for draft/missing/unknown; **assert every security header is present and exact** (the full CSP string, `nosniff`, `frame-ancestors`/no `allow-*` sandbox, `Referrer-Policy`, `noindex` only for unlisted, `no-store` only for unlisted); assert no `Access-Control-Allow-Credentials`/app-CORS header is emitted on `/p/*`; assert a stored `<script>`/`onerror`/remote-`<img src=http://internal>` never appears in the served bytes (sanitize on write + harden on serve both apply); assert the public GET ignores cookies/owner (a page published by owner A serves with no auth, and *draft* pages 404 regardless). These are the analogue of the Phase 4 secure-download-header tests.
+
+### C — Search/filter/folders + MCP tools + portal
+
+- [ ] **12.8** Search & filter: add a `page_ft_title`/`page_ft_body` SEARCH index pair over `page(title, body)` directly in `0010_pages.surql` (the migration runner commits each file separately and the `kn_text` analyzer is already committed by `0007`, so no separate `0011` file is needed — gated on the same 11.1 capability check, falling back to `string::lowercase CONTAINS` if `SEARCH` is unavailable). Extend `knowledge::repo::search` + the `SearchResults` struct with a `pages` typed section (one more `search_two(db, owner, "page", "title", "body", q, limit)` call; `title_col` already returns `title` for `page` with no change), and add `pages` to the REST/MCP `SearchResults` serializer and the frontend `SearchResults` type. Pages then appear in `knowledge_search` / `GET /knowledge/search` and the Phase 11 portal search. The portal search UI must **escape/strip `<mark>`-wrapped HTML snippets** before rendering (page `body` is HTML; an unescaped snippet is stored-XSS in the app origin) — the same treatment documents' snippets need. List filters (12.3) cover folder, visibility, type-already-implied, date (`updated_at` ordering), and author (pre-auth no-op).
+- [ ] **12.9** MCP tools (mirror the `documents_*` conventions exactly; **owner-scoped via the `owner: &str` arg** of `tools::call`, which takes no `Actor`): `pages_list` (filters: folder, visibility, q), `pages_get`, `pages_create` (body Markdown or HTML via a `source` arg → `convert::md_to_html` then `sanitize`; visibility defaults to **draft** so an agent's page is never self-published to public), `pages_update`, `pages_delete`, `pages_publish` (set visibility, return a result carrying **`id`, `title`, and the public `url`** — `id`+`title` are required so `activity::entry_for` populates `target_id`/`target_title`, mirroring `documents_publish`'s `{published, id, title, …}` shape), `pages_unpublish`. Add `page.create|update|delete|publish|unpublish` arms (target_type `page`) to `activity::entry_for` so each mutating call is logged in `handle_tools_call` to the `agent` label. **In the same commit**, update the `call()` match in `mcp/tools.rs`, the `known` name list, the `assert_eq!(advertised.len(), known.len())` count, and the `def(…)` catalog entries — the drift guard reds otherwise. Enrich the `initialize` instructions with "PUBLISH — author a page and share its URL with pages_publish".
+- [ ] **12.10 (tests-with-features, mock-LLM, no egress)** MCP tool tests in `tests/pages.rs` / extend `tests/mcp.rs`: `pages_create`→`pages_publish` returns a non-empty `url`; `tools/list` advertises the new tools and the count assert holds; an `activity_list` after a publish shows a `page.publish` row with a non-empty `target_id`/`target_title` attributed to the `X-Baitler-Agent` label; the end-to-end agent script (extend 11.9's) authors a page under a project, publishes it, and `GET /p/{slug}` serves it.
+- [ ] **12.11** Frontend `PagesPage` (lazy-loaded; add a `navItems` entry in `navigation.ts` (phase 12) **and** a `FEATURE_PAGES` map entry in `App.tsx`, the route-element pattern the other features use): reuse the Phase 7 **TipTap editor + `MarkdownEditor`** for authoring (no new editor; HTML pages instantiate the same `RichTextEditor`) and the Phase 4 **folder/breadcrumb + ConfirmModal** patterns for organisation. A list with filters (folder, visibility chip, `q` search, type/date — the `author` filter shown but disabled-with-tooltip pre-auth), a **publish/visibility toggle** (draft/unlisted/public) with a **copy-the-share-link** clipboard affordance on the `public_url`, a **preview** rendered **only** in a sandboxed `<iframe sandbox src="/p/{slug}">` against the (cross-origin, isolated) serve route — never by injecting page `body` into the app DOM (which would re-open remote-`<img>`/XSS in the app origin) — and the reusable `ExportMenu` for PDF/Word/MD. Add a frontend `pages/api.ts` + `types.ts` mirroring `documents/`. Frontend tests (`vitest`): list/filter render, publish-toggle calls the mutation, copy-link writes the clipboard, the preview iframe has `sandbox`.
+
+### D — Multi-user / auth-gated sharing (post Phase 2)
+
+- [ ] **12.12** *(after Phase 2)* When auth lands, the `Actor`/`CurrentOwner` swap makes pages per-real-user with **zero page-query changes** (every authoring route is already owner-scoped). Then add, only on real need: per-recipient/per-link sharing (share a page *to* a named user), password-protected pages, the now-meaningful **author filter** (add the `created_by` column then — one `DEFINE FIELD … IF NOT EXISTS`), custom domains, and optional page analytics. The public `GET /p/{slug}` stays unauthenticated by design; auth only gates *authoring/management* and any private-share variant. Keep `/p/*` on its isolated origin, and ensure the Phase 2 auth cookie is **never** set on an origin that serves `/p/*`.
+
+> **Phase 2 dependency (crisp):** Milestones A–C ship **now** against the `DEV_OWNER` stub — a single user can author, organise, publish, and share pages by link, and an agent can do the same over MCP. What needs Phase 2: a *second user* to share *to*, per-user/per-link ACLs, the author filter (one owner today), and any private/password-gated share. The public read surface (`GET /p/{slug}`) is unauthenticated *by nature* and ships in B — auth never gates it; it only gates the management half. The **hard** auth coupling is the cookie-origin tripwire: Phase 2 must not place an auth cookie on any origin that also serves `/p/*`. Sequencing matches the Phase 11 rule — "any public publishing surface AFTER Phase 2 auth" applies to *multi-user* sharing, while the single-owner public link is the minimal slice safe to ship earlier behind strict origin isolation + CSP.
+
+> Acceptance: a `page` authored from Markdown or HTML (portal or MCP) is **sanitized on write** (a stored `<script>` never survives, so even a draft preview is safe), filed in a Phase 4 folder, optionally joined to a project and cross-linked, found by `knowledge_search`, and — once published — served at `GET /p/{slug}` as locked-down HTML from an isolated origin with the exact strict CSP + nosniff + noindex(unlisted), with `harden_for_render` applied at serve time so a remote `<img>` never reaches the served bytes; drafts/missing 404; `pages_publish` (REST or MCP) returns the shareable URL and writes a `page.publish` activity row (with id+title) attributed to the agent; the `/p/*` router is verifiably outside the credentialed CORS layer. The page is a **distinct table from `document`** (creating a page mutates no document) and **reuses the Phase 4 `folder` table** (no second hierarchy). Backend `build`/`clippy -D warnings`/`test`/`fmt` and frontend `tsc`/`eslint`/`vitest`/`build` green; the secure-serving header tests pass; no test needs egress or keys; the `mcp/tools.rs` drift guard is updated in lockstep. **Deferred:** a published-HTML snapshot column, share-token/rotation, versioning/history, CDN/edge cache + ETag, in-process rate limiting (Phase 10), templating/site-builder + a `site` table, per-page asset table/route, per-page analytics, `tags`/`created_by` columns, multi-user/per-link ACLs, password protection, custom domains (all post Phase 2 or on real need).
+
 ---
 
 ## Cross-cutting (apply continuously)
@@ -392,6 +457,12 @@ Phase 2). Each milestone is independently shippable.
   the `activity` log; agent writes land as `review="draft"` pending human approval, never silently published.
 - **MCP catalog drift guard**: a new tool updates the `call()` match, the `known` name list, and the
   `assert_eq!(advertised.len(), known.len())` count in `mcp/tools.rs` in the same commit (else `cargo test` reds).
+- **Never serve user/agent HTML on the cookie origin**: any public-serving surface (Phase 12 `/p/*`)
+  ships outside the credentialed CORS layer and any auth middleware, behind a no-script
+  `default-src 'none'; sandbox` CSP, and on a distinct `PUBLIC_PAGE_ORIGIN` once Phase 2 adds session
+  cookies — the auth cookie is never set on an origin that also serves public HTML.
+- **Sanitize stored prose on write**: no draft/preview/search-snippet path ever renders unsanitized
+  author/agent HTML in the app origin; server-side render paths additionally run `harden_for_render`.
 
 ## Suggested sequencing
 
@@ -402,3 +473,6 @@ borrow its security/test items earlier where cheap. **Phase 7.5 (MCP foundation)
 **Phase 11 (Agentic Baitler)** builds directly on it — Milestone A (knowledge model + search + activity +
 MVP agentic loop) can start now against the dev-owner stub; multi-agent identity and any public publishing
 surface are gated on **Phase 2 auth**, so sequence those after it.
+ **Phase 12 (Web page hosting)** realizes the `/p/:slug` surface Phase 11 deferred and reuses Phase 4/7/11
+wholesale, so it can begin once Phase 11 merges; Milestones A–C ship against the `DEV_OWNER` stub, only
+multi-user/per-link sharing (12.D) waits on Phase 2 — which must never set an auth cookie on an origin that serves `/p/*`.

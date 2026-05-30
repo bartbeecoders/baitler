@@ -9,13 +9,15 @@ use crate::error::{AppError, AppResult};
 
 use super::model::IdeaRow;
 
-const IDEA_SELECT: &str = "SELECT uuid, owner, title, body, tags, status, links, \
+const IDEA_SELECT: &str =
+    "SELECT uuid, owner, title, body, tags, status, links, review, project_id, \
     type::string(created_at) AS created_at, type::string(updated_at) AS updated_at FROM idea";
 
 fn vanished() -> AppError {
     AppError::Internal("idea not found immediately after write".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_idea(
     db: &Db,
     owner: &str,
@@ -23,11 +25,13 @@ pub async fn create_idea(
     body: &str,
     tags: &[String],
     status: &str,
+    review: &str,
+    project_id: Option<&str>,
 ) -> AppResult<IdeaRow> {
     let uuid = Uuid::new_v4().to_string();
     let sql = format!(
         "CREATE idea CONTENT {{ uuid: $uuid, owner: $owner, title: $title, body: $body, \
-         tags: $tags, status: $status, links: [] }}; \
+         tags: $tags, status: $status, links: [], review: $review, project_id: $project_id }}; \
          {IDEA_SELECT} WHERE owner = $owner AND uuid = $uuid"
     );
     let mut res = db
@@ -38,6 +42,8 @@ pub async fn create_idea(
         .bind(("body", body.to_string()))
         .bind(("tags", tags.to_vec()))
         .bind(("status", status.to_string()))
+        .bind(("review", review.to_string()))
+        .bind(("project_id", project_id.map(str::to_string)))
         .await?
         .check()?;
     let rows: Vec<IdeaRow> = res.take(1)?;
@@ -101,6 +107,7 @@ pub async fn list_ideas(
     Ok(res.take(0)?)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update_idea(
     db: &Db,
     owner: &str,
@@ -109,6 +116,7 @@ pub async fn update_idea(
     body: Option<&str>,
     tags: Option<&[String]>,
     status: Option<&str>,
+    review: Option<&str>,
 ) -> AppResult<Option<IdeaRow>> {
     let mut sets: Vec<&str> = Vec::new();
     if title.is_some() {
@@ -122,6 +130,9 @@ pub async fn update_idea(
     }
     if status.is_some() {
         sets.push("status = $status");
+    }
+    if review.is_some() {
+        sets.push("review = $review");
     }
     if sets.is_empty() {
         return get_idea(db, owner, uuid).await;
@@ -147,6 +158,9 @@ pub async fn update_idea(
     }
     if let Some(s) = status {
         query = query.bind(("status", s.to_string()));
+    }
+    if let Some(r) = review {
+        query = query.bind(("review", r.to_string()));
     }
     let mut res = query.await?.check()?;
     let rows: Vec<IdeaRow> = res.take(1)?;
@@ -209,6 +223,8 @@ pub async fn delete_idea(db: &Db, owner: &str, uuid: &str) -> AppResult<bool> {
             set_links(db, owner, linked, &scrubbed).await?;
         }
     }
+    // Scrub cross-type knowledge links (Phase 11) pointing at this idea.
+    crate::knowledge::repo::scrub_item_links(db, owner, "idea", uuid).await?;
     db.query("DELETE idea WHERE owner = $owner AND uuid = $uuid")
         .bind(("owner", owner.to_string()))
         .bind(("uuid", uuid.to_string()))
