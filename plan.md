@@ -167,6 +167,24 @@ Goal: rich document editing plus the shared HTML ↔ Markdown ↔ PDF ↔ Office
 > its own ~120 KB gz chunk). **SSRF note:** server-side Chrome renders user HTML — sanitized
 > with ammonia (scripts/handlers stripped); network-isolating Chrome is a Phase-10 hardening item.
 
+## Phase 7.5 — MCP server (foundation, shipped this session)
+
+Goal: expose Baitler's existing features as Model Context Protocol tools so external agents
+(Claude Code, Grok Code, Hermes) drive the same owner-scoped repos a REST caller would.
+
+- [x] **7.5.1** Built-in MCP server at `POST /mcp` served **in-process** by `baitler-api` (Streamable HTTP, JSON-response variant; batched arrays; `GET`/`DELETE /mcp` → `405`; no server-initiated SSE). Code in `backend/crates/api/src/mcp/{mod.rs,protocol.rs,tools.rs,b64.rs}`; reuses the same repos + DB, so MCP and REST never drift.
+- [x] **7.5.2** `baitler-mcp` stdio↔HTTP bridge binary (`backend/crates/api/src/bin/…`) for stdio-only clients; a thin forwarder that never opens the RocksDB file (no lock contention with the API).
+- [x] **7.5.3** **24 tools**: `health`; `ideas_{list,get,create,update,delete,link,unlink,tags}`; `documents_{list,get,create,update,delete,export}`; `files_{list,get,read,write,delete}`; `folders_create`; `ai_{providers,chat}`; `export`. Binary results (pdf/docx/file reads) returned Base64 in JSON; `MAX_BLOB` (24 MB) caps reads/writes over MCP.
+- [x] **7.5.4** `MCP_ENABLED` toggle and optional `MCP_AUTH_TOKEN` bearer auth (constant-time compare, never logged); `initialize` echoes the client's protocol version.
+- [x] **7.5.5** Install guide `docs/mcp.md` (HTTP + stdio for Claude Code, Hermes, generic clients) and the drift guards `every_advertised_tool_is_dispatchable_by_name` (hardcoded name list + exact-count assert) and `tool_schemas_are_well_formed`.
+
+> Shipped and merged to `main` this session. All tools resolve the single `DEV_OWNER` via the
+> `owner.rs` stub — Phase 2 auth swaps only the `CurrentOwner` extractor and every tool inherits
+> per-user scoping with no client change. Phase 11 builds **on** this; it does not re-create it.
+> Two things stay strictly in sync with every new tool, in the same commit: the `call()` dispatch
+> match **and** the `known` name list + `assert_eq!(advertised.len(), known.len())` in
+> `mcp/tools.rs` — adding a tool without both turns `cargo test` red.
+
 ## Phase 8 — Data visualization & analytics
 
 Goal: charts and dashboards over the user's files, ideas, and AI usage.
@@ -198,6 +216,170 @@ Goal: production-ready.
 - [ ] **10.6** Performance pass (bundle size, query/index tuning in SurrealDB, caching).
 - [ ] **10.7** Docs: user guide + developer onboarding in `docs/`.
 
+## Phase 11 — Agentic Baitler (knowledge base & assistant)
+
+Goal: turn the shipped MCP surface into a trustworthy agentic loop — an external agent organises a
+project's knowledge in Baitler, publishes human-readable/exportable artifacts, and answers questions
+grounded in the stored data, while the human stays in control via a Projects view, an activity audit
+timeline, and a draft→published review gate.
+
+Vision: "Document the projects I'm working on into Baitler, making it my personal knowledge base and
+assistant." Through `/mcp`, agents (1) organise the knowledge base, (2) generate web pages / Markdown /
+PDF / Office so knowledge is human-readable and exportable, and (3) read the data to answer questions and
+produce content. The smallest change that makes this real is two additive primitives layered onto the
+existing owner-scoped model — a `project` grouping with cross-type membership, and an append-only
+`activity` log tagged with the calling agent — plus full-text search, a single attribution seam threaded
+through the MCP layer, and a publishing step that reuses `convert.rs`. RAG (embeddings/vector search),
+multi-agent IAM, and any public web surface are deliberately deferred behind real need or Phase 2 auth.
+
+Architecture: everything is purely additive — new module `knowledge/` (project + membership + activity
++ search repos), migrations `0006`–`0008`, and new MCP tools that mirror the `ideas_*`/`documents_*`
+style. No existing table or repo is rewritten; the one cross-cutting change is threading an `Actor` (owner
++ agent label) from `mcp::handle` down to `tools::call`. A new `review` field (NOT the existing closed
+`status` enum) carries draft/published. Retrieval uses SurrealDB full-text `SEARCH` indexes over existing
+prose; the `ai_chat` `context` fold already covers grounded answering. Milestones: A (MVP loop + search +
+activity), B (publishing), C (MCP discoverability: prompts/resources), D (multi-agent identity, gated on
+Phase 2). Each milestone is independently shippable.
+
+### A — Knowledge model, search, activity, MVP loop
+
+- [ ] **11.1** Capability gate (blocking, do first): with a throwaway query against both the `kv-mem`
+  (tests) and `kv-rocksdb` (dev) engines, confirm the pinned `surrealdb` 2 build executes
+  `DEFINE ANALYZER … TOKENIZERS class FILTERS lowercase,ascii` and `DEFINE INDEX … SEARCH ANALYZER … BM25`
+  over an already-populated table inside a migration's `BEGIN/COMMIT`. Block 11.4/11.5 on this; if `SEARCH`
+  is unavailable on the embedded engine, fall back to the existing `string::lowercase(...) CONTAINS`
+  approach (as `ideas_repo::list_ideas` already does) and drop the analyzer.
+- [ ] **11.2** Migration `0006_knowledge.surql` (SCHEMAFULL, mirroring `0003_ideas.surql`). Define `project`:
+  `uuid` (UNIQUE index `project_uuid`), `owner`, `name`, `slug` (composite UNIQUE `project_slug` ON owner,slug),
+  `summary` (Markdown DEFAULT ""), `status` DEFAULT "active" (active|archived), `created_at` DEFAULT
+  `time::now()`, `updated_at` VALUE `time::now()`; index `project_owner` ON owner,status. Define one polymorphic
+  edge table `kn_member` serving both project membership and cross-type links: `uuid` UNIQUE, `owner`,
+  `kind` (member|link), `src_type`/`src_id`, `dst_type`/`dst_id` (`*_type` ∈ idea|document|file|project),
+  `relation` DEFAULT "" (free-form: contains|implements|supersedes|references), `created_at`; indexes
+  `kn_member_owner` ON owner,kind and `kn_member_src` ON owner,src_type,src_id and `kn_member_dst` ON
+  owner,dst_type,dst_id. Files are members-only (no file↔file links); constrain `dst_type` validation to the
+  four types that matter.
+- [ ] **11.3** Add a `review` field (draft|published, DEFAULT "published") to `idea` and `document` in the same
+  migration, plus optional `project_id` (`option<string>`, DEFAULT NONE) on `idea`, `document`, and `file`.
+  Existing rows default `review="published"` so nothing already captured is hidden; agent writes pass
+  `review="draft"` explicitly, human/portal writes default to published. Do NOT overload the existing closed
+  `idea.status` enum (`inbox|active|done|archived`, validated by `clean_status`, indexed by `idea_owner`) — it
+  stays untouched. Add the new fields to the SCHEMAFULL migration, the `CREATE CONTENT`/`UPDATE SET` builders in
+  `ideas/repo.rs` and `documents/repo.rs`, and `IdeaDto`/`DocumentDto`. Add a `document_review` index for the
+  review-queue/publish queries.
+- [ ] **11.4** Migration `0007_search.surql`: a `kn_text` analyzer and `SEARCH` (BM25) indexes over already-existing
+  prose — `idea(title,body)`, `document(title,body)`, `project(name,summary)`, `file(name)` — gated on 11.1. No
+  schema change to the indexed tables. Add `doc_repo::search_documents` and `knowledge::repo::search` running a
+  per-type `@@`/`search::score()` query per table and returning **typed sections** each internally ranked, ordered
+  overall by a stable secondary key (`updated_at`); do not promise a fake unified cross-table relevance rank.
+  Snippets via `search::highlight()` or a manual substring around the match.
+- [ ] **11.5** New `knowledge/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `ideas/` verbatim. Project
+  CRUD (`PROJECT_SELECT` projection, owner-scoped, slug generated from `name` with `-2` collision suffix).
+  Membership/link repo: `add_member`/`remove_member`/`list_members(project, type?)`; `link_items`/`unlink_items`
+  written as BOTH directed `kn_member kind='link'` rows (mirroring `link_ideas`' symmetric write — never a
+  union-query path, which would defeat `kn_member_dst`); `backlinks(type,id)` querying src OR dst. Validate that
+  **both** endpoints exist and are owner-owned before inserting an edge (mirror `ideas_link`'s existence checks).
+  Wire a `kn_member` scrub into `delete_idea`/`delete_document`/`delete_file` (and `delete_project` removes
+  memberships only, never the underlying items) — mirroring the Phase 5 link-scrub-on-delete precedent.
+- [ ] **11.6** Thread attribution: resolve an `Actor { owner, agent: Option<String> }` once in `mcp::mod.rs::handle`
+  (the only function with headers) and pass it as a parameter through `dispatch` → `handle_tools_call` →
+  `tools::call(state, &actor, name, args)`, changing those signatures and the per-tool fns to read `&actor.owner`
+  in place of the `DEV_OWNER` literals. The default for the open/legacy path is `Actor { owner: DEV_OWNER,
+  agent: None }`, so the refactor is behaviour-preserving. The agent label comes from an optional `X-Baitler-Agent`
+  header (or a per-token label once 11.13 lands) — no agent table required for v1. This single seam is the
+  prerequisite for activity attribution and the Phase 2 owner swap.
+- [ ] **11.7** Migration `0008_activity.surql`: append-only `activity` table — `uuid` UNIQUE, `owner`, `agent`
+  (`option<string>`, NONE = human/web), `action` (e.g. idea.create, document.publish, file.delete), `target_type`,
+  `target_id`, `target_title`, `project_id` (`option<string>`), `summary`, `created_at`; index `activity_owner` ON
+  owner,created_at. A central helper appended at the end of each **mutating** write tool
+  (`ideas_{create,update,delete,link,unlink}`, `documents_{create,update,delete}`, `files_{write,delete}`,
+  `folders_create`, `projects_*`); read tools log nothing. Wrap the content write + activity insert in one
+  SurrealDB transaction so "exactly one activity row per write" holds under failure (else document it as
+  best-effort). Never persist tool argument bodies verbatim — a derived summary + target id only.
+- [ ] **11.8** New MCP tools (each owner-scoped via `&actor.owner`, mirroring `ideas_*` validation helpers):
+  `projects_{list,get,create,update,delete}` (`projects_get` resolves member counts + typed summaries);
+  `projects_add_item`/`projects_remove_item` (set/clear membership for an idea/document/file); `knowledge_link`/
+  `knowledge_unlink` (generic cross-type edge); `knowledge_backlinks`; `knowledge_search` (typed, ranked hits
+  across idea/document/project/file with id/type/title/snippet — the agent's "access the data" entry point);
+  `activity_list` (filter by project/agent/since). Extend existing `ideas_{create,update}` and
+  `documents_{create,update}` schemas with optional `project_id` and `review` args. Update the `call()` match, the
+  `known` name list, and the `assert_eq!` count in `mcp/tools.rs` in the same commit.
+- [ ] **11.9** Offline end-to-end acceptance test driving the JSON-RPC surface as an agent would, no egress:
+  `initialize` → `tools/list` → `folders_create` → `files_write` → `ideas_create` (review=draft) →
+  `projects_create` + `projects_add_item` → `documents_create` (review=draft) → `knowledge_link` →
+  `knowledge_search` (asserts the seeded items rank) → `documents_export` format=markdown/html (asserts bytes) →
+  `ai_chat` against the `mock` provider grounded via `context`. Cap assembled `context` (bound the number of
+  sources and per-source chars) before folding into `build_system`. PDF/DOCX assertions stay conditional on
+  `CHROME_BIN`/`PANDOC_BIN`, as the Phase 7 tests already are.
+
+### B — Publishing & export
+
+- [ ] **11.10** SSRF hardening of the server-side renderer (independent, highest priority — exploitable **today**
+  via `documents_export(pdf)` and `POST /export`): network-isolate headless Chrome in `convert.rs::html_to_pdf`
+  (run in a network namespace / firewalled container blocking egress except loopback-none; drop `--no-sandbox`
+  where the host allows a real sandbox), and add a stricter publish-profile sanitizer that strips remote resource
+  loads (external `<img>/<iframe>/<link>`, `srcset`, oversized `data:` URIs) before any render. Document
+  `CHROME_NETNS`/sandbox env in `.env.example`. Keep the existing 30s timeout + output-size cap.
+- [ ] **11.11** `documents_publish` and `collection_export` reusing the shared pathway: render a document (or a
+  project's ordered member documents concatenated with a title page + combined TOC) to a self-contained, sanitized
+  HTML / Markdown / PDF / DOCX artifact via `convert::export` (unchanged), and persist it as an owner-scoped file —
+  mirroring `files_write`'s full pattern (`storage.put(key, bytes)` AND `files_repo::create_file(...)` with
+  storage-rollback-on-failure), returning a stable file id. Publishing a document flips its `review` to published.
+  Run synchronously inside the request/tool call (the only slow path is one Chrome invocation, already bounded to
+  30s) — no job queue, no progress notifications (the JSON-response transport can't push, and an async jobs layer is
+  over-engineering for a single user). Excel/PowerPoint stay deferred (structured data, not prose).
+- [ ] **11.12** Frontend (thin): a Projects page (project cards with member + draft-pending counts) and a Project
+  detail view that lists member documents/ideas/files grouped by type, each linking to its existing Files/Ideas/
+  Documents feature page, with a provenance line ("created by claude-code") and a Draft/Published chip; a Review
+  queue filtering `review=draft` ideas+documents with inline Approve (PATCH → published) and Reject/Delete (reuse the
+  Phase 4 accessible ConfirmModal); an Activity timeline (`GET /activity`). Reuse the existing `MarkdownEditor` and
+  `ExportMenu` (a project README exports via `POST /export`). Lazy-loaded and nav-registered like the other features.
+
+### C — MCP discoverability (additive protocol surface)
+
+- [ ] **11.13** Advertise and implement prompts: add `"prompts": { "listChanged": false }` to the `initialize`
+  capabilities, implement the `prompts/get` dispatch arm (only `prompts/list` exists today, stubbed to `[]`;
+  `prompts/get` currently returns method-not-found), and ship server-side templates encoding the house workflows:
+  `document_project`, `organise_inbox`, `answer_from_kb`, `publish_document`. Each renders a `messages` array with
+  live repo context substituted for the given ids. Enrich the `initialize` `instructions` string with the
+  organise→publish→retrieve loop so a cold agent does the right thing.
+- [ ] **11.14** Advertise and implement resources (optional, only if a consuming client needs it): add
+  `"resources": { "subscribe": false, "listChanged": false }` to capabilities, implement `resources/list` +
+  `resources/read` (both stubbed/absent today) exposing a `baitler://{idea|document|project}/{uuid}` URI scheme over
+  the existing getters (text resources as `{uri,mimeType,text}`; honor `MAX_BLOB`), plus
+  `resources/templates/list`. Owner-scoped via `&actor.owner`, capped + reusing `knowledge_search` for a
+  `baitler://search?q=` template. Defer subscriptions, `outputSchema`/`structuredContent`, and MCP cursor pagination
+  — `limit`/`offset` is plenty for a personal KB.
+
+### Notes
+
+> Acceptance: an agent issuing one instruction ("document this repo as a Baitler project") produces a `project`
+> row, ≥1 `document` and ideas bound via `project_id`/`kn_member`, cross-links resolvable from either endpoint and
+> scrubbed on delete, and matching `activity` rows tagged with the agent — all owner-scoped and visible in the
+> portal. `knowledge_search` returns typed, ranked hits across idea/document/project/file (works without any
+> embeddings). Agent writes land as `review="draft"` in the Review queue; Approve flips them to published; existing
+> content is never hidden by the migration. `documents_publish`/`collection_export` reuse the single `convert.rs`
+> pathway and persist owner-scoped files (PDF needs Chrome, DOCX needs Pandoc; both degrade to a clear 503).
+> Backend `build`/`clippy -D warnings`/`test`/`fmt` and frontend `tsc`/`eslint`/`vitest`/`build` green; the Mock
+> LLM is the asserted path; no test needs egress or keys; the vector/SEARCH DDL is smoke-tested under `kv-mem` in
+> CI; the `mcp/tools.rs` drift guard (name list + count) is updated in lockstep with every new tool.
+>
+> Deferred (build only on real need): **RAG** — `kn_embedding` table, HNSW vector index, `kb_search`/`kb_recall`,
+> an `embed()` capability on `LlmProvider`, a Mock embedder, and `EMBEDDINGS_*` config (full-text `SEARCH` + the
+> existing `ai_chat` context fold already satisfy "answer questions about my data" for one user); a first-class
+> `note` type (model a note as an idea with `status="inbox"`); a public unauthenticated `/p/:slug` web surface; an
+> async jobs/progress layer and MCP `notifications/progress` (the transport can't push); MCP resource subscriptions,
+> `outputSchema`/`structuredContent`, and cursor pagination; per-agent IAM (token table, scopes, capability matrix,
+> rate/quota budgets).
+>
+> Depends on Phase 2 auth: today every tool resolves `DEV_OWNER` and the `agent` label is the only attribution
+> dimension (the human/agent distinction is meaningless pre-auth). When OAuth lands, the `Actor` seam (11.6) swaps
+> `DEV_OWNER` for the session owner in one place, agent tokens become user-issued credentials, and any public
+> publishing surface gains real ownership — with no knowledge-layer query changes. The public `/p/:slug` page, true
+> multi-agent identity, and per-token scopes are sequenced **after** Phase 2; until then publishing means
+> "downloadable owner-scoped file in the portal," and the new REST routes inherit the same localhost-only-until-auth
+> caveat as the rest of the API.
+
 ---
 
 ## Cross-cutting (apply continuously)
@@ -206,10 +388,17 @@ Goal: production-ready.
 - **Tests-with-features**: each phase ships its own tests; don't defer to Phase 10.
 - **Markdown everywhere**: ideas, documents, and AI output all support Markdown as the lingua franca.
 - **Keep `CLAUDE.md` current**: update **Commands** and architecture notes as real code lands.
+- **Provenance for agent-written content**: every MCP *mutation* records who (agent label) + what in
+  the `activity` log; agent writes land as `review="draft"` pending human approval, never silently published.
+- **MCP catalog drift guard**: a new tool updates the `call()` match, the `known` name list, and the
+  `assert_eq!(advertised.len(), known.len())` count in `mcp/tools.rs` in the same commit (else `cargo test` reds).
 
 ## Suggested sequencing
 
 Phases 0→3 are the critical path (you can't demo anything without repo + backend + auth + shell).
 After Phase 3, Phases 4–8 are largely independent and can be parallelized or reordered by priority.
 Phase 9 (mobile) waits until the API contract is stable (post Phase 4–6). Phase 10 runs last but
-borrow its security/test items earlier where cheap.
+borrow its security/test items earlier where cheap. **Phase 7.5 (MCP foundation) shipped** with Phase 7;
+**Phase 11 (Agentic Baitler)** builds directly on it — Milestone A (knowledge model + search + activity +
+MVP agentic loop) can start now against the dev-owner stub; multi-agent identity and any public publishing
+surface are gated on **Phase 2 auth**, so sequence those after it.
