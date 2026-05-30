@@ -17,8 +17,13 @@ use crate::owner::CurrentOwner;
 use crate::slug::slugify;
 use crate::state::AppState;
 
-use super::model::{PageDto, PageSummary, SOURCE_FORMATS, VISIBILITIES};
+use super::model::{PageDto, PageRow, PageSummary, SOURCE_FORMATS, VISIBILITIES};
 use super::repo::{self, PagePatch};
+
+/// Build a `PageDto`, making its share URL absolute against `PUBLIC_PAGE_ORIGIN`.
+fn dto(state: &AppState, page: PageRow) -> PageDto {
+    PageDto::from(page).with_origin(state.config.public_page_origin.as_deref())
+}
 
 const MAX_LIMIT: usize = 500;
 const DEFAULT_LIMIT: usize = 100;
@@ -88,7 +93,10 @@ async fn list(
     )
     .await?;
     Ok(Json(PageListResponse {
-        pages: pages.into_iter().map(Into::into).collect(),
+        pages: pages
+            .into_iter()
+            .map(|p| PageSummary::from(p).with_origin(state.config.public_page_origin.as_deref()))
+            .collect(),
     }))
 }
 
@@ -157,7 +165,7 @@ async fn create(
         project_id.as_deref(),
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(page.into())))
+    Ok((StatusCode::CREATED, Json(dto(&state, page))))
 }
 
 async fn get_one(
@@ -168,7 +176,7 @@ async fn get_one(
     let page = repo::get_page(&state.db, &owner, &id)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(page.into()))
+    Ok(Json(dto(&state, page)))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -242,7 +250,7 @@ async fn update(
     let updated = repo::update_page(db, &owner, &id, patch)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(updated.into()))
+    Ok(Json(dto(&state, updated)))
 }
 
 async fn delete(
@@ -286,7 +294,7 @@ async fn publish(
     let updated = repo::update_page(&state.db, &owner, &id, patch)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(updated.into()))
+    Ok(Json(dto(&state, updated)))
 }
 
 async fn unpublish(
@@ -301,7 +309,7 @@ async fn unpublish(
     let updated = repo::update_page(&state.db, &owner, &id, patch)
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(updated.into()))
+    Ok(Json(dto(&state, updated)))
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────

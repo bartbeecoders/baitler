@@ -36,6 +36,7 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        public_page_origin: None,
         secret_key: [7u8; 32],
     }
 }
@@ -439,4 +440,111 @@ async fn pages_are_owner_scoped() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// The whole point of the phase: a published page is served at GET /p/{slug} as
+/// locked-down HTML from outside the credentialed CORS layer, drafts 404, and a
+/// remote <img>/<script> never reaches the served bytes.
+#[tokio::test]
+async fn public_serving_and_security_headers() {
+    let (base, _s) = spawn().await;
+    let c = Client::new();
+
+    const EXPECTED_CSP: &str = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; \
+         base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox";
+
+    // A public page whose body embeds a <script> and an internal-host remote <img>.
+    let pubp = create_page(
+        &c,
+        &base,
+        json!({
+            "title": "Public Page",
+            "body": "<h1>Hello</h1><script>alert(1)</script><img src=\"http://169.254.169.254/x\">"
+        }),
+    )
+    .await;
+    let pub_id = id_of(&pubp);
+    post(
+        &c,
+        format!("{base}/pages/{pub_id}/publish"),
+        json!({ "visibility": "public" }),
+    )
+    .await;
+    let pub_slug = pubp["slug"].as_str().unwrap();
+
+    let unlisted = create_page(
+        &c,
+        &base,
+        json!({ "title": "Secret", "visibility": "unlisted", "body": "<p>shh</p>" }),
+    )
+    .await;
+    let un_slug = unlisted["slug"].as_str().unwrap().to_string();
+
+    let draft = create_page(&c, &base, json!({ "title": "Draft" })).await;
+    let draft_slug = draft["slug"].as_str().unwrap().to_string();
+
+    // ── public: 200, exact locked-down headers, sanitized + hardened body ──
+    let r = c
+        .get(format!("{base}/p/{pub_slug}"))
+        .header("Origin", "http://localhost:8100")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let h = r.headers().clone();
+    assert_eq!(
+        h.get("content-security-policy").unwrap(),
+        EXPECTED_CSP,
+        "exact CSP"
+    );
+    assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(h.get("referrer-policy").unwrap(), "no-referrer");
+    assert!(h
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    // public pages are indexable: no noindex / no-store.
+    assert!(h.get("x-robots-tag").is_none());
+    assert!(h.get("cache-control").is_none());
+    // CRUCIAL: the public route is outside the credentialed CORS layer.
+    assert!(
+        h.get("access-control-allow-credentials").is_none(),
+        "/p/* must not be credentialed-CORS"
+    );
+    let body = r.text().await.unwrap();
+    assert!(body.contains("<h1>Hello</h1>"));
+    assert!(!body.contains("<script"), "script never served");
+    assert!(
+        !body.contains("169.254.169.254"),
+        "remote img stripped by harden_for_render at serve"
+    );
+
+    // ── unlisted: 200 + noindex + no-store ──
+    let ru = c.get(format!("{base}/p/{un_slug}")).send().await.unwrap();
+    assert_eq!(ru.status(), StatusCode::OK);
+    assert_eq!(ru.headers().get("x-robots-tag").unwrap(), "noindex");
+    assert_eq!(
+        ru.headers().get("cache-control").unwrap(),
+        "private, no-store"
+    );
+
+    // ── draft / unknown: 404 (existence never confirmed) ──
+    assert_eq!(
+        c.get(format!("{base}/p/{draft_slug}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        c.get(format!("{base}/p/does-not-exist"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
 }

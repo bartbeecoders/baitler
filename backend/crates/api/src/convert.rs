@@ -164,7 +164,10 @@ pub async fn export(
     }
 }
 
-const PRINT_CSS: &str = "body{font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;\
+/// A minimal default stylesheet for rendered/served prose (PDF export and the
+/// public page serve path both inline this).
+pub const PRINT_CSS: &str =
+    "body{font-family:-apple-system,system-ui,'Segoe UI',Roboto,sans-serif;\
 line-height:1.6;color:#111;max-width:48rem;margin:2.5rem auto;padding:0 1rem}\
 h1,h2,h3{line-height:1.25;margin-top:1.4em}\
 pre{background:#f4f4f5;padding:.75rem;border-radius:6px;overflow:auto}\

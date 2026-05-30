@@ -5,5 +5,6 @@
 //! serve path is unauthenticated by design (see `public`, Phase 12.5).
 
 pub mod model;
+pub mod public;
 pub mod repo;
 pub mod routes;

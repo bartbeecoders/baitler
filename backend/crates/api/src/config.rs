@@ -58,6 +58,11 @@ pub struct Config {
     pub storage: StorageConfig,
     /// Model Context Protocol (MCP) server settings.
     pub mcp: McpConfig,
+    /// Absolute origin that public pages (`GET /p/{slug}`, Phase 12) are served
+    /// from, used to build absolute share URLs. `None` → share URLs stay
+    /// origin-relative. For real isolation this MUST differ from the app/cookie
+    /// origin; Phase 2 must never set an auth cookie on it.
+    pub public_page_origin: Option<String>,
     /// 32-byte key for encrypting secrets at rest (derived from the app secret).
     pub secret_key: [u8; 32],
 }
@@ -193,6 +198,11 @@ impl Config {
             auth_token: non_empty(env::var("MCP_AUTH_TOKEN").ok()),
         };
 
+        // Origin for public page share URLs. Trailing slashes are trimmed so the
+        // builder can `format!("{origin}/p/{slug}")` cleanly.
+        let public_page_origin = non_empty(env::var("PUBLIC_PAGE_ORIGIN").ok())
+            .map(|o| o.trim_end_matches('/').to_string());
+
         // Key for encrypting stored secrets (e.g. LLM API keys). A dev default
         // keeps the app runnable, but it must be set in production.
         let app_secret = match non_empty(env::var("APP_SECRET").ok()) {
@@ -214,6 +224,7 @@ impl Config {
             surreal,
             storage,
             mcp,
+            public_page_origin,
             secret_key,
         })
     }
@@ -291,6 +302,7 @@ impl fmt::Debug for Config {
             .field("surreal", &self.surreal)
             .field("storage", &self.storage)
             .field("mcp", &self.mcp)
+            .field("public_page_origin", &self.public_page_origin)
             .field("secret_key", &"***")
             .finish()
     }

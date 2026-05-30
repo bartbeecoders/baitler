@@ -55,6 +55,29 @@ pub struct PageDto {
     pub updated_at: String,
 }
 
+impl PageDto {
+    /// Prefix the (origin-relative) `public_url` with the configured public
+    /// origin, when one is set and the page is published. No-op for drafts.
+    pub fn with_origin(mut self, origin: Option<&str>) -> Self {
+        self.public_url = absolutize(self.public_url, origin);
+        self
+    }
+}
+
+impl PageSummary {
+    pub fn with_origin(mut self, origin: Option<&str>) -> Self {
+        self.public_url = absolutize(self.public_url, origin);
+        self
+    }
+}
+
+fn absolutize(relative: String, origin: Option<&str>) -> String {
+    match origin {
+        Some(o) if !relative.is_empty() => format!("{o}{relative}"),
+        _ => relative,
+    }
+}
+
 impl From<PageRow> for PageDto {
     fn from(r: PageRow) -> Self {
         let public_url = public_path(&r.slug, &r.visibility);

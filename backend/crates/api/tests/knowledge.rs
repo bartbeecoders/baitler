@@ -36,6 +36,7 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        public_page_origin: None,
         secret_key: [7u8; 32],
     }
 }
