@@ -49,7 +49,7 @@ async fn create(
 ) -> AppResult<(StatusCode, Json<DocumentDto>)> {
     let title = clean_title(&body.title)?;
     let html = clean_body(body.body.as_deref().unwrap_or(""))?;
-    let doc = repo::create_document(&state.db, &owner, &title, &html).await?;
+    let doc = repo::create_document(&state.db, &owner, &title, &html, "published", None).await?;
     Ok((StatusCode::CREATED, Json(doc.into())))
 }
 
@@ -84,7 +84,7 @@ async fn update(
         None => None,
     };
 
-    let updated = repo::update_document(db, &owner, &id, title.as_deref(), html.as_deref())
+    let updated = repo::update_document(db, &owner, &id, title.as_deref(), html.as_deref(), None)
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(updated.into()))

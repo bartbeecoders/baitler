@@ -306,10 +306,10 @@ async fn owner_scoping_isolates_ideas() {
     let (_base, state) = spawn().await;
     let db = &state.db;
 
-    let alice = repo::create_idea(db, "alice", "A", "", &[], "inbox")
+    let alice = repo::create_idea(db, "alice", "A", "", &[], "inbox", "published", None)
         .await
         .unwrap();
-    repo::create_idea(db, "bob", "B", "", &[], "inbox")
+    repo::create_idea(db, "bob", "B", "", &[], "inbox", "published", None)
         .await
         .unwrap();
 

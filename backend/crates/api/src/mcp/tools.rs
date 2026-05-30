@@ -21,7 +21,7 @@ use crate::documents::repo as doc_repo;
 use crate::error::AppError;
 use crate::files::model::{FileDto, FolderDto};
 use crate::files::repo as files_repo;
-use crate::ideas::model::{IdeaDto, IdeaSummary, STATUSES};
+use crate::ideas::model::{IdeaDto, IdeaSummary, REVIEWS, STATUSES};
 use crate::ideas::repo as ideas_repo;
 use crate::llm::{ChatMessage, ChatRequest};
 use crate::owner::DEV_OWNER;
@@ -178,6 +178,30 @@ fn clean_status(status: &str) -> Result<String, ToolError> {
     }
 }
 
+/// The review state for an agent write. Defaults to `draft` (so agent-authored
+/// content lands in the human review queue) unless an explicit, valid `review`
+/// argument is supplied.
+fn clean_review(args: &Value) -> Result<String, ToolError> {
+    match opt_trimmed(args, "review") {
+        Some(r) if REVIEWS.contains(&r.as_str()) => Ok(r),
+        Some(_) => Err(invalid(
+            "invalid review (expected one of: draft, published)",
+        )),
+        None => Ok("draft".to_string()),
+    }
+}
+
+/// An optional explicit review transition for an update (None = leave unchanged).
+fn opt_review(args: &Value) -> Result<Option<String>, ToolError> {
+    match opt_trimmed(args, "review") {
+        Some(r) if REVIEWS.contains(&r.as_str()) => Ok(Some(r)),
+        Some(_) => Err(invalid(
+            "invalid review (expected one of: draft, published)",
+        )),
+        None => Ok(None),
+    }
+}
+
 fn clean_tags(tags: Vec<String>) -> Result<Vec<String>, ToolError> {
     let mut cleaned: Vec<String> = Vec::new();
     for tag in tags {
@@ -307,7 +331,13 @@ async fn ideas_create(state: &AppState, args: &Value) -> ToolResult {
         Some(s) => clean_status(&s)?,
         None => "inbox".to_string(),
     };
-    let idea = ideas_repo::create_idea(&state.db, DEV_OWNER, &title, &body, &tags, &status).await?;
+    let review = clean_review(args)?;
+    // `project_id` arg (with existence validation) is wired in 11.8 once the
+    // knowledge repo exists; until then new ideas are created unbound.
+    let idea = ideas_repo::create_idea(
+        &state.db, DEV_OWNER, &title, &body, &tags, &status, &review, None,
+    )
+    .await?;
     Ok(json!(IdeaDto::from(idea)))
 }
 
@@ -333,6 +363,7 @@ async fn ideas_update(state: &AppState, args: &Value) -> ToolResult {
         Some(s) => Some(clean_status(&s)?),
         None => None,
     };
+    let review = opt_review(args)?;
 
     let updated = ideas_repo::update_idea(
         &state.db,
@@ -342,6 +373,7 @@ async fn ideas_update(state: &AppState, args: &Value) -> ToolResult {
         body.as_deref(),
         tags.as_deref(),
         status.as_deref(),
+        review.as_deref(),
     )
     .await?
     .ok_or_else(not_found)?;
@@ -408,7 +440,8 @@ async fn documents_create(state: &AppState, args: &Value) -> ToolResult {
         return Err(invalid("document is too large"));
     }
     let html = convert::sanitize(&raw);
-    let doc = doc_repo::create_document(&state.db, DEV_OWNER, &title, &html).await?;
+    let review = clean_review(args)?;
+    let doc = doc_repo::create_document(&state.db, DEV_OWNER, &title, &html, &review, None).await?;
     Ok(json!(DocumentDto::from(doc)))
 }
 
@@ -427,11 +460,18 @@ async fn documents_update(state: &AppState, args: &Value) -> ToolResult {
         Some(b) => Some(convert::sanitize(&b)),
         None => None,
     };
+    let review = opt_review(args)?;
 
-    let updated =
-        doc_repo::update_document(&state.db, DEV_OWNER, &id, title.as_deref(), html.as_deref())
-            .await?
-            .ok_or_else(not_found)?;
+    let updated = doc_repo::update_document(
+        &state.db,
+        DEV_OWNER,
+        &id,
+        title.as_deref(),
+        html.as_deref(),
+        review.as_deref(),
+    )
+    .await?
+    .ok_or_else(not_found)?;
     Ok(json!(DocumentDto::from(updated)))
 }
 

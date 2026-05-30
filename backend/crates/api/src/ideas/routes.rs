@@ -100,7 +100,18 @@ async fn create(
         Some(s) => clean_status(s)?,
         None => "inbox".to_string(),
     };
-    let idea = repo::create_idea(&state.db, &owner, &title, &text, &tags, &status).await?;
+    // Portal/REST writes are human-authored → published immediately, no project.
+    let idea = repo::create_idea(
+        &state.db,
+        &owner,
+        &title,
+        &text,
+        &tags,
+        &status,
+        "published",
+        None,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(idea.into())))
 }
 
@@ -155,6 +166,7 @@ async fn update(
         text.as_deref(),
         tags.as_deref(),
         status.as_deref(),
+        None, // review transitions go through the publish/approve path, not generic update
     )
     .await?
     .ok_or(AppError::NotFound)?;

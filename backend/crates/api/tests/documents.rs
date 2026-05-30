@@ -208,10 +208,10 @@ async fn documents_are_owner_scoped() {
     let (_base, state) = spawn().await;
     let db = &state.db;
 
-    let alice = repo::create_document(db, "alice", "A", "<p>a</p>")
+    let alice = repo::create_document(db, "alice", "A", "<p>a</p>", "published", None)
         .await
         .unwrap();
-    repo::create_document(db, "bob", "B", "<p>b</p>")
+    repo::create_document(db, "bob", "B", "<p>b</p>", "published", None)
         .await
         .unwrap();
 

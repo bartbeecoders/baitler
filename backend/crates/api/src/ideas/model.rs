@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 /// The statuses an idea can have (board columns).
 pub const STATUSES: &[&str] = &["inbox", "active", "done", "archived"];
 
+/// The review states gating agent-written content.
+pub const REVIEWS: &[&str] = &["draft", "published"];
+
 /// An `idea` row as projected by the repository (timestamps cast to strings).
 #[derive(Debug, Clone, Deserialize)]
 pub struct IdeaRow {
@@ -15,6 +18,11 @@ pub struct IdeaRow {
     pub tags: Vec<String>,
     pub status: String,
     pub links: Vec<String>,
+    /// Draft/published gate (Phase 11): agent writes land as `draft` pending
+    /// human approval; everything else is `published`.
+    pub review: String,
+    /// Project this idea belongs to, if any (Phase 11 membership pointer).
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -28,6 +36,8 @@ pub struct IdeaDto {
     pub tags: Vec<String>,
     pub status: String,
     pub links: Vec<String>,
+    pub review: String,
+    pub project_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -41,6 +51,8 @@ impl From<IdeaRow> for IdeaDto {
             tags: r.tags,
             status: r.status,
             links: r.links,
+            review: r.review,
+            project_id: r.project_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
