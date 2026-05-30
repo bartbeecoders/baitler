@@ -15,6 +15,7 @@ pub mod documents;
 pub mod error;
 pub mod files;
 pub mod ideas;
+pub mod knowledge;
 pub mod llm;
 pub mod mcp;
 pub mod migrations;

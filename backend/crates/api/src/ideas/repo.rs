@@ -223,6 +223,8 @@ pub async fn delete_idea(db: &Db, owner: &str, uuid: &str) -> AppResult<bool> {
             set_links(db, owner, linked, &scrubbed).await?;
         }
     }
+    // Scrub cross-type knowledge links (Phase 11) pointing at this idea.
+    crate::knowledge::repo::scrub_item_links(db, owner, "idea", uuid).await?;
     db.query("DELETE idea WHERE owner = $owner AND uuid = $uuid")
         .bind(("owner", owner.to_string()))
         .bind(("uuid", uuid.to_string()))

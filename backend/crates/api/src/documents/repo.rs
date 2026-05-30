@@ -119,6 +119,8 @@ pub async fn delete_document(db: &Db, owner: &str, uuid: &str) -> AppResult<bool
     if get_document(db, owner, uuid).await?.is_none() {
         return Ok(false);
     }
+    // Scrub cross-type knowledge links (Phase 11) pointing at this document.
+    crate::knowledge::repo::scrub_item_links(db, owner, "document", uuid).await?;
     db.query("DELETE document WHERE owner = $owner AND uuid = $uuid")
         .bind(("owner", owner.to_string()))
         .bind(("uuid", uuid.to_string()))

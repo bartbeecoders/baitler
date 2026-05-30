@@ -270,6 +270,8 @@ pub async fn delete_file(db: &Db, owner: &str, uuid: &str) -> AppResult<Option<F
     // Project the row before deleting so the handler can clean up storage.
     let existing = get_file(db, owner, uuid).await?;
     if existing.is_some() {
+        // Scrub cross-type knowledge links (Phase 11) pointing at this file.
+        crate::knowledge::repo::scrub_item_links(db, owner, "file", uuid).await?;
         db.query("DELETE file WHERE owner = $owner AND uuid = $uuid")
             .bind(("owner", owner.to_string()))
             .bind(("uuid", uuid.to_string()))
