@@ -208,9 +208,17 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Baitler personal-assistant API as MCP tools: manage ideas, HTML \
-                         documents, files/folders, convert & export content, and run LLM chat \
-                         through configured providers. Call tools/list to see all tools.",
+        "instructions": "Baitler is a personal knowledge base exposed as MCP tools. The loop: \
+                         ORGANISE — create a project (projects_create), then add ideas \
+                         (Markdown) and HTML documents under it (ideas_create/documents_create \
+                         with project_id) and connect related items with knowledge_link; \
+                         RETRIEVE — answer questions by knowledge_search across the base, then \
+                         ground a reply with ai_chat; EXPORT — turn documents into pdf/docx/\
+                         markdown/html via documents_export or export. Agent-authored ideas & \
+                         documents default to review=draft for human approval; set \
+                         review=published to skip the queue. Files/folders hold binary assets. \
+                         Send an X-Baitler-Agent header so your actions are attributed in \
+                         activity_list. Call tools/list for the full schema.",
     })
 }
 

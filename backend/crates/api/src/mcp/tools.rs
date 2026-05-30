@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
+use crate::activity;
 use crate::ai::repo as ai_repo;
 use crate::convert::{self, SourceFormat, TargetFormat};
 use crate::crypto;
@@ -23,6 +24,8 @@ use crate::files::model::{FileDto, FolderDto};
 use crate::files::repo as files_repo;
 use crate::ideas::model::{IdeaDto, IdeaSummary, REVIEWS, STATUSES};
 use crate::ideas::repo as ideas_repo;
+use crate::knowledge::model::{ProjectDto, PROJECT_STATUSES};
+use crate::knowledge::repo as kn;
 use crate::llm::{ChatMessage, ChatRequest};
 use crate::state::AppState;
 
@@ -98,6 +101,21 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "files_write" => files_write(state, owner, args).await,
         "files_delete" => files_delete(state, owner, args).await,
         "folders_create" => folders_create(state, owner, args).await,
+        // Projects
+        "projects_list" => projects_list(state, owner).await,
+        "projects_get" => projects_get(state, owner, args).await,
+        "projects_create" => projects_create(state, owner, args).await,
+        "projects_update" => projects_update(state, owner, args).await,
+        "projects_delete" => projects_delete(state, owner, args).await,
+        "projects_add_item" => projects_add_item(state, owner, args).await,
+        "projects_remove_item" => projects_remove_item(state, owner, args).await,
+        // Knowledge graph + search
+        "knowledge_link" => knowledge_link(state, owner, args).await,
+        "knowledge_unlink" => knowledge_unlink(state, owner, args).await,
+        "knowledge_backlinks" => knowledge_backlinks(state, owner, args).await,
+        "knowledge_search" => knowledge_search(state, owner, args).await,
+        // Activity / provenance
+        "activity_list" => activity_list(state, owner, args).await,
         // AI
         "ai_providers" => ai_providers(state, owner).await,
         "ai_chat" => ai_chat(state, owner, args).await,
@@ -331,10 +349,16 @@ async fn ideas_create(state: &AppState, owner: &str, args: &Value) -> ToolResult
         None => "inbox".to_string(),
     };
     let review = clean_review(args)?;
-    // `project_id` arg (with existence validation) is wired in 11.8 once the
-    // knowledge repo exists; until then new ideas are created unbound.
+    let project_id = resolve_project_arg(state, owner, args).await?;
     let idea = ideas_repo::create_idea(
-        &state.db, owner, &title, &body, &tags, &status, &review, None,
+        &state.db,
+        owner,
+        &title,
+        &body,
+        &tags,
+        &status,
+        &review,
+        project_id.as_deref(),
     )
     .await?;
     Ok(json!(IdeaDto::from(idea)))
@@ -440,7 +464,16 @@ async fn documents_create(state: &AppState, owner: &str, args: &Value) -> ToolRe
     }
     let html = convert::sanitize(&raw);
     let review = clean_review(args)?;
-    let doc = doc_repo::create_document(&state.db, owner, &title, &html, &review, None).await?;
+    let project_id = resolve_project_arg(state, owner, args).await?;
+    let doc = doc_repo::create_document(
+        &state.db,
+        owner,
+        &title,
+        &html,
+        &review,
+        project_id.as_deref(),
+    )
+    .await?;
     Ok(json!(DocumentDto::from(doc)))
 }
 
@@ -763,6 +796,171 @@ async fn ai_chat(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     Ok(out)
 }
 
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+/// Read an optional `project_id` arg, validating it names an existing owned project.
+async fn resolve_project_arg(
+    state: &AppState,
+    owner: &str,
+    args: &Value,
+) -> Result<Option<String>, ToolError> {
+    match opt_trimmed(args, "project_id") {
+        Some(pid) => {
+            if kn::get_project(&state.db, owner, &pid).await?.is_none() {
+                return Err(invalid("project_id does not match an existing project"));
+            }
+            Ok(Some(pid))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn projects_list(state: &AppState, owner: &str) -> ToolResult {
+    let projects = kn::list_projects(&state.db, owner).await?;
+    let dtos: Vec<ProjectDto> = projects.into_iter().map(Into::into).collect();
+    Ok(json!({ "projects": dtos }))
+}
+
+async fn projects_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let project = kn::get_project(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    let counts = kn::member_counts(&state.db, owner, &id).await?;
+    let members = kn::project_members(&state.db, owner, &id).await?;
+    Ok(json!({ "project": ProjectDto::from(project), "counts": counts, "members": members }))
+}
+
+async fn projects_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let name = clean_title(&req_str(args, "name")?)?;
+    let summary = opt_str(args, "summary").unwrap_or_default();
+    if summary.len() > MAX_IDEA_BODY {
+        return Err(invalid("summary is too large"));
+    }
+    let project = kn::create_project(&state.db, owner, &name, &summary).await?;
+    Ok(json!(ProjectDto::from(project)))
+}
+
+async fn projects_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    kn::get_project(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    let name = match opt_str(args, "name") {
+        Some(n) => Some(clean_title(&n)?),
+        None => None,
+    };
+    let summary = opt_str(args, "summary");
+    let status = match opt_trimmed(args, "status") {
+        Some(s) if PROJECT_STATUSES.contains(&s.as_str()) => Some(s),
+        Some(_) => {
+            return Err(invalid(
+                "invalid status (expected one of: active, archived)",
+            ))
+        }
+        None => None,
+    };
+    let updated = kn::update_project(
+        &state.db,
+        owner,
+        &id,
+        name.as_deref(),
+        summary.as_deref(),
+        status.as_deref(),
+    )
+    .await?
+    .ok_or_else(not_found)?;
+    Ok(json!(ProjectDto::from(updated)))
+}
+
+async fn projects_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    if kn::delete_project(&state.db, owner, &id).await? {
+        Ok(json!({ "deleted": true, "id": id }))
+    } else {
+        Err(not_found())
+    }
+}
+
+async fn projects_add_item(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let project_id = req_str(args, "project_id")?;
+    let item_type = req_str(args, "item_type")?;
+    let item_id = req_str(args, "item_id")?;
+    kn::set_membership(&state.db, owner, &item_type, &item_id, Some(&project_id)).await?;
+    Ok(json!({ "added": true, "id": project_id, "item_type": item_type, "item_id": item_id }))
+}
+
+async fn projects_remove_item(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let item_type = req_str(args, "item_type")?;
+    let item_id = req_str(args, "item_id")?;
+    kn::set_membership(&state.db, owner, &item_type, &item_id, None).await?;
+    Ok(json!({ "removed": true, "id": item_id, "item_type": item_type }))
+}
+
+// ── Knowledge links & search ──────────────────────────────────────────────────
+
+async fn knowledge_link(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let st = req_str(args, "src_type")?;
+    let si = req_str(args, "src_id")?;
+    let dt = req_str(args, "dst_type")?;
+    let di = req_str(args, "dst_id")?;
+    let rel = opt_trimmed(args, "relation").unwrap_or_default();
+    kn::link_items(&state.db, owner, &st, &si, &dt, &di, &rel).await?;
+    Ok(json!({
+        "linked": true, "id": si, "src_type": st, "src_id": si,
+        "dst_type": dt, "dst_id": di, "relation": rel
+    }))
+}
+
+async fn knowledge_unlink(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let st = req_str(args, "src_type")?;
+    let si = req_str(args, "src_id")?;
+    let dt = req_str(args, "dst_type")?;
+    let di = req_str(args, "dst_id")?;
+    kn::unlink_items(&state.db, owner, &st, &si, &dt, &di).await?;
+    Ok(json!({
+        "unlinked": true, "id": si, "src_type": st, "src_id": si, "dst_type": dt, "dst_id": di
+    }))
+}
+
+async fn knowledge_backlinks(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let item_type = req_str(args, "item_type")?;
+    let item_id = req_str(args, "item_id")?;
+    let links = kn::backlinks(&state.db, owner, &item_type, &item_id).await?;
+    Ok(json!({ "links": links }))
+}
+
+async fn knowledge_search(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let q = req_str(args, "q")?;
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let results = kn::search(&state.db, owner, &q, limit).await?;
+    Ok(json!(results))
+}
+
+// ── Activity ──────────────────────────────────────────────────────────────────
+
+async fn activity_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let project_id = opt_trimmed(args, "project_id");
+    let agent = opt_trimmed(args, "agent");
+    let since = opt_trimmed(args, "since");
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let rows = activity::list(
+        &state.db,
+        owner,
+        project_id.as_deref(),
+        agent.as_deref(),
+        since.as_deref(),
+        limit,
+    )
+    .await?;
+    let dtos: Vec<activity::ActivityDto> = rows.into_iter().map(Into::into).collect();
+    Ok(json!({ "activity": dtos }))
+}
+
 // ── Tool catalog (advertised via `tools/list`) ────────────────────────────────
 
 /// Build one tool definition.
@@ -812,24 +1010,29 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "ideas_create",
-            "Create a new idea. Body is Markdown.",
+            "Create a new idea. Body is Markdown. Agent writes default to review=draft \
+             (pending human approval); pass review=published to skip the queue.",
             json!({
                 "title": str_schema("idea title (required)"),
                 "body": str_schema("Markdown body"),
                 "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "tags" }),
                 "status": str_schema(&status_desc),
+                "review": str_schema("draft | published (default draft)"),
+                "project_id": str_schema("project to file this idea under (optional)"),
             }),
             &["title"],
         ),
         def(
             "ideas_update",
-            "Update fields of an existing idea. Only provided fields change.",
+            "Update fields of an existing idea. Only provided fields change. Pass \
+             review=published to approve/publish a draft.",
             json!({
                 "id": str_schema("idea id (required)"),
                 "title": str_schema("new title"),
                 "body": str_schema("new Markdown body"),
                 "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }),
                 "status": str_schema(&status_desc),
+                "review": str_schema("draft | published"),
             }),
             &["id"],
         ),
@@ -878,20 +1081,25 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "documents_create",
-            "Create an HTML document. The body is sanitized server-side.",
+            "Create an HTML document (body sanitized server-side). Agent writes default to \
+             review=draft; pass review=published to skip the review queue.",
             json!({
                 "title": str_schema("document title (required)"),
                 "body": str_schema("HTML body"),
+                "review": str_schema("draft | published (default draft)"),
+                "project_id": str_schema("project to file this document under (optional)"),
             }),
             &["title"],
         ),
         def(
             "documents_update",
-            "Update a document's title and/or HTML body (sanitized).",
+            "Update a document's title and/or HTML body (sanitized). Pass review=published to \
+             approve/publish a draft.",
             json!({
                 "id": str_schema("document id (required)"),
                 "title": str_schema("new title"),
                 "body": str_schema("new HTML body"),
+                "review": str_schema("draft | published"),
             }),
             &["id"],
         ),
@@ -994,6 +1202,120 @@ pub fn definitions() -> Vec<Value> {
             }),
             &["provider", "model", "messages"],
         ),
+        // Projects
+        def(
+            "projects_list",
+            "List projects (groupings of ideas/documents/files for a piece of work).",
+            json!({}),
+            &[],
+        ),
+        def(
+            "projects_get",
+            "Fetch a project with its member counts (incl. pending drafts) and members by type.",
+            json!({ "id": str_schema("project id") }),
+            &["id"],
+        ),
+        def(
+            "projects_create",
+            "Create a project. A URL-safe slug is derived from the name.",
+            json!({
+                "name": str_schema("project name (required)"),
+                "summary": str_schema("Markdown summary"),
+            }),
+            &["name"],
+        ),
+        def(
+            "projects_update",
+            "Update a project's name, summary, and/or status (active|archived).",
+            json!({
+                "id": str_schema("project id (required)"),
+                "name": str_schema("new name"),
+                "summary": str_schema("new summary"),
+                "status": str_schema("active | archived"),
+            }),
+            &["id"],
+        ),
+        def(
+            "projects_delete",
+            "Delete a project. Members are detached (their project_id cleared), never deleted.",
+            json!({ "id": str_schema("project id") }),
+            &["id"],
+        ),
+        def(
+            "projects_add_item",
+            "Add an idea/document/file to a project (sets its project membership).",
+            json!({
+                "project_id": str_schema("project id"),
+                "item_type": str_schema("idea | document | file"),
+                "item_id": str_schema("the item's id"),
+            }),
+            &["project_id", "item_type", "item_id"],
+        ),
+        def(
+            "projects_remove_item",
+            "Remove an idea/document/file from its project.",
+            json!({
+                "item_type": str_schema("idea | document | file"),
+                "item_id": str_schema("the item's id"),
+            }),
+            &["item_type", "item_id"],
+        ),
+        // Knowledge graph + search
+        def(
+            "knowledge_link",
+            "Create a symmetric cross-type link between two items (idea|document|file|project).",
+            json!({
+                "src_type": str_schema("idea | document | file | project"),
+                "src_id": str_schema("source item id"),
+                "dst_type": str_schema("idea | document | file | project"),
+                "dst_id": str_schema("target item id"),
+                "relation": str_schema("optional label, e.g. contains | implements | references"),
+            }),
+            &["src_type", "src_id", "dst_type", "dst_id"],
+        ),
+        def(
+            "knowledge_unlink",
+            "Remove the cross-type link between two items.",
+            json!({
+                "src_type": str_schema("idea | document | file | project"),
+                "src_id": str_schema("source item id"),
+                "dst_type": str_schema("idea | document | file | project"),
+                "dst_id": str_schema("target item id"),
+            }),
+            &["src_type", "src_id", "dst_type", "dst_id"],
+        ),
+        def(
+            "knowledge_backlinks",
+            "List everything linked to an item, as typed references with titles.",
+            json!({
+                "item_type": str_schema("idea | document | file | project"),
+                "item_id": str_schema("the item's id"),
+            }),
+            &["item_type", "item_id"],
+        ),
+        def(
+            "knowledge_search",
+            "Full-text search across ideas, documents, projects, and files. Returns typed, \
+             ranked sections with highlighted snippets — the agent's entry point for \
+             answering questions from the knowledge base.",
+            json!({
+                "q": str_schema("the search query"),
+                "limit": int_schema("max hits per type (default 100, max 500)"),
+            }),
+            &["q"],
+        ),
+        // Activity / provenance
+        def(
+            "activity_list",
+            "List recent activity (who did what), newest first — the provenance/audit trail.",
+            json!({
+                "project_id": str_schema("only activity for this project"),
+                "agent": str_schema("only activity by this agent label"),
+                "since": str_schema("ISO-8601 timestamp lower bound"),
+                "limit": int_schema("max results (default 100, max 500)"),
+            }),
+            &[],
+        ),
         // Conversion / export
         def(
             "export",
@@ -1046,6 +1368,18 @@ mod tests {
             "files_write",
             "files_delete",
             "folders_create",
+            "projects_list",
+            "projects_get",
+            "projects_create",
+            "projects_update",
+            "projects_delete",
+            "projects_add_item",
+            "projects_remove_item",
+            "knowledge_link",
+            "knowledge_unlink",
+            "knowledge_backlinks",
+            "knowledge_search",
+            "activity_list",
             "ai_providers",
             "ai_chat",
             "export",

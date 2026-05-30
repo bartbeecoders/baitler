@@ -87,6 +87,30 @@ fn initialize_msg() -> Value {
     })
 }
 
+/// Call a tool as a named agent (sends `X-Baitler-Agent`), assert success, and
+/// return the tool's structured result (parsed from the text content).
+async fn tool_call(client: &Client, base: &str, agent: &str, name: &str, args: Value) -> Value {
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .header("X-Baitler-Agent", agent)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        }))
+        .send()
+        .await
+        .expect("request failed");
+    let body: Value = resp.json().await.expect("json body");
+    assert_eq!(
+        body["result"]["isError"], false,
+        "tool `{name}` returned an error: {body}"
+    );
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    serde_json::from_str(text).expect("tool result was not JSON")
+}
+
 #[tokio::test]
 async fn initialize_returns_server_info_and_tools_capability() {
     let base = spawn_app(enabled()).await;
@@ -347,4 +371,204 @@ async fn disabled_mcp_returns_not_found() {
     let (status, _body) = rpc(&client, &base, initialize_msg()).await;
     // Endpoint isn't mounted → app's JSON 404 envelope.
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The full Phase 11 agentic loop, driven over JSON-RPC exactly as an external
+/// agent (Claude Code, Hermes, …) would — organise → connect → retrieve →
+/// publish → export → grounded chat — with provenance asserted at the end.
+/// Fully offline: the Mock LLM provider is the chat path; no egress, no keys.
+#[tokio::test]
+async fn agentic_loop_end_to_end() {
+    let base = spawn_app(enabled()).await;
+    let client = Client::new();
+    let agent = "claude-code-test";
+
+    // tools/list advertises the Phase 11 surface.
+    let (_s, listed) = rpc(
+        &client,
+        &base,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+    )
+    .await;
+    let names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    for expected in [
+        "projects_create",
+        "projects_add_item",
+        "knowledge_link",
+        "knowledge_search",
+        "knowledge_backlinks",
+        "activity_list",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing tool {expected}"
+        );
+    }
+
+    // ── ORGANISE ──
+    let project = tool_call(
+        &client,
+        &base,
+        agent,
+        "projects_create",
+        json!({ "name": "Ownership Project", "summary": "rust memory model" }),
+    )
+    .await;
+    let pid = project["id"].as_str().unwrap().to_string();
+    assert_eq!(project["slug"], "ownership-project");
+
+    let folder = tool_call(
+        &client,
+        &base,
+        agent,
+        "folders_create",
+        json!({ "name": "assets" }),
+    )
+    .await;
+    let fid = folder["id"].as_str().unwrap().to_string();
+    let file = tool_call(
+        &client,
+        &base,
+        agent,
+        "files_write",
+        json!({ "name": "notes.txt", "content_text": "raw notes", "folder": fid }),
+    )
+    .await;
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "projects_add_item",
+        json!({ "project_id": pid, "item_type": "file", "item_id": file["id"] }),
+    )
+    .await;
+
+    // Agent-authored idea + document default to review=draft and land in the project.
+    let idea = tool_call(&client, &base, agent, "ideas_create",
+        json!({ "title": "Borrow checker", "body": "# ownership\nthe borrow checker", "project_id": pid })).await;
+    assert_eq!(idea["review"], "draft", "agent writes default to draft");
+    assert_eq!(idea["project_id"], pid);
+    let iid = idea["id"].as_str().unwrap().to_string();
+
+    let doc = tool_call(&client, &base, agent, "documents_create",
+        json!({ "title": "Ownership spec", "body": "<p>the ownership model and lifetimes</p>", "project_id": pid })).await;
+    assert_eq!(doc["review"], "draft");
+    let did = doc["id"].as_str().unwrap().to_string();
+
+    // ── CONNECT ──
+    tool_call(&client, &base, agent, "knowledge_link",
+        json!({ "src_type": "idea", "src_id": iid, "dst_type": "document", "dst_id": did, "relation": "implements" })).await;
+
+    let detail = tool_call(&client, &base, agent, "projects_get", json!({ "id": pid })).await;
+    assert_eq!(detail["counts"]["ideas"], 1);
+    assert_eq!(detail["counts"]["documents"], 1);
+    assert_eq!(detail["counts"]["files"], 1);
+    assert_eq!(
+        detail["counts"]["drafts"], 2,
+        "idea + document are pending approval"
+    );
+
+    // Backlinks resolve from the idea to the document.
+    let backlinks = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_backlinks",
+        json!({ "item_type": "idea", "item_id": iid }),
+    )
+    .await;
+    assert_eq!(backlinks["links"][0]["id"], did);
+    assert_eq!(backlinks["links"][0]["relation"], "implements");
+
+    // ── RETRIEVE ──
+    let search = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_search",
+        json!({ "q": "ownership" }),
+    )
+    .await;
+    assert!(
+        !search["documents"].as_array().unwrap().is_empty(),
+        "doc matches 'ownership'"
+    );
+    assert!(
+        !search["ideas"].as_array().unwrap().is_empty(),
+        "idea matches 'ownership'"
+    );
+
+    // ── APPROVE / PUBLISH ──
+    let published = tool_call(
+        &client,
+        &base,
+        agent,
+        "ideas_update",
+        json!({ "id": iid, "review": "published" }),
+    )
+    .await;
+    assert_eq!(published["review"], "published");
+
+    // ── EXPORT ── (markdown works offline; pdf/docx need Chrome/Pandoc)
+    let export = tool_call(
+        &client,
+        &base,
+        agent,
+        "documents_export",
+        json!({ "id": did, "format": "markdown" }),
+    )
+    .await;
+    assert_eq!(export["content_type"], "text/markdown; charset=utf-8");
+    assert!(export["text"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("ownership"));
+
+    // ── GROUNDED CHAT ── (Mock provider, offline)
+    let chat = tool_call(
+        &client,
+        &base,
+        agent,
+        "ai_chat",
+        json!({ "provider": "mock", "model": "mock-1",
+                "messages": [{ "role": "user", "content": "summarize the project" }],
+                "context": "the ownership model" }),
+    )
+    .await;
+    assert!(chat["text"].as_str().unwrap().contains("mock"));
+
+    // ── PROVENANCE ── every mutation is attributed to the agent.
+    let activity = tool_call(&client, &base, agent, "activity_list", json!({})).await;
+    let rows = activity["activity"].as_array().unwrap();
+    let has = |action: &str| {
+        rows.iter()
+            .any(|r| r["action"] == action && r["agent"] == agent)
+    };
+    assert!(has("project.create"));
+    assert!(has("idea.create"));
+    assert!(has("document.create"));
+    assert!(has("knowledge.link"));
+    assert!(has("idea.update"), "the publish/approve was recorded");
+
+    // Filtering by agent returns only this agent's actions; reads logged nothing.
+    let by_agent = tool_call(
+        &client,
+        &base,
+        agent,
+        "activity_list",
+        json!({ "agent": agent }),
+    )
+    .await;
+    assert!(by_agent["activity"].as_array().unwrap().len() >= 6);
+    assert!(
+        rows.iter()
+            .all(|r| r["action"].as_str().unwrap() != "knowledge.search"),
+        "read-only tools record no activity"
+    );
 }
