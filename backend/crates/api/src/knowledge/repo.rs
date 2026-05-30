@@ -67,7 +67,9 @@ pub async fn create_project(
     summary: &str,
 ) -> AppResult<ProjectRow> {
     let uuid = Uuid::new_v4().to_string();
-    let slug = unique_slug(db, owner, &slugify(name)).await?;
+    let slug =
+        crate::slug::unique_slug(db, owner, "project", &crate::slug::slugify(name, "project"))
+            .await?;
     let sql = format!(
         "CREATE project CONTENT {{ uuid: $uuid, owner: $owner, name: $name, slug: $slug, \
          summary: $summary, status: \"active\" }}; \
@@ -213,6 +215,7 @@ pub async fn project_members(db: &Db, owner: &str, project_id: &str) -> AppResul
         ideas: members_of(db, owner, "idea", project_id).await?,
         documents: members_of(db, owner, "document", project_id).await?,
         files: members_of(db, owner, "file", project_id).await?,
+        pages: members_of(db, owner, "page", project_id).await?,
     })
 }
 
@@ -223,8 +226,13 @@ async fn members_of(
     project_id: &str,
 ) -> AppResult<Vec<MemberItem>> {
     let tcol = title_col(table);
-    // Files have no `review`; project the column as NONE so the shape is uniform.
-    let review_expr = if table == "file" { "NONE" } else { "review" };
+    // Files and pages have no `review` field (pages gate on `visibility`); project
+    // the column as NONE so the member shape is uniform across types.
+    let review_expr = if table == "file" || table == "page" {
+        "NONE"
+    } else {
+        "review"
+    };
     // `updated_at` is projected only so it can drive ORDER BY (SurrealDB requires
     // the ordered idiom to be selected); `MemberItem` deserialization ignores it.
     let sql = format!(
@@ -253,6 +261,7 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         ideas: members.ideas.len(),
         documents: members.documents.len(),
         files: members.files.len(),
+        pages: members.pages.len(),
         drafts,
     })
 }
@@ -497,65 +506,4 @@ async fn run_search(
     Ok(res.take(0)?)
 }
 
-// ── Slug helpers ──────────────────────────────────────────────────────────────
-
-/// Lowercase, ASCII-alnum, dash-separated slug. Empty input → "project".
-fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash && !out.is_empty() {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    let slug = out.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "project".to_string()
-    } else {
-        slug
-    }
-}
-
-/// Pick a slug free within the owner's namespace, appending `-2`, `-3`, … on collision.
-async fn unique_slug(db: &Db, owner: &str, base: &str) -> AppResult<String> {
-    let mut res = db
-        .query(
-            "SELECT VALUE slug FROM project WHERE owner = $owner AND \
-             (slug = $base OR string::starts_with(slug, $prefix))",
-        )
-        .bind(("owner", owner.to_string()))
-        .bind(("base", base.to_string()))
-        .bind(("prefix", format!("{base}-")))
-        .await?
-        .check()?;
-    let taken: Vec<String> = res.take(0)?;
-    if !taken.contains(&base.to_string()) {
-        return Ok(base.to_string());
-    }
-    for n in 2..10_000 {
-        let cand = format!("{base}-{n}");
-        if !taken.contains(&cand) {
-            return Ok(cand);
-        }
-    }
-    // Pathological fallback: a uuid suffix is guaranteed unique.
-    Ok(format!("{base}-{}", Uuid::new_v4()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::slugify;
-
-    #[test]
-    fn slugify_basics() {
-        assert_eq!(slugify("My Cool Project!"), "my-cool-project");
-        assert_eq!(slugify("  spaced  out  "), "spaced-out");
-        assert_eq!(slugify("Rust 2.0 — notes"), "rust-2-0-notes");
-        assert_eq!(slugify("***"), "project");
-        assert_eq!(slugify(""), "project");
-    }
-}
+// Slug generation lives in `crate::slug` (shared with pages, Phase 12).

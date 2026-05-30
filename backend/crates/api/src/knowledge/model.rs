@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Item types that can be a project member or a link endpoint.
-pub const ITEM_TYPES: &[&str] = &["idea", "document", "file", "project"];
+pub const ITEM_TYPES: &[&str] = &["idea", "document", "file", "project", "page"];
 /// Types that can belong to a project (everything except project itself).
-pub const MEMBER_TYPES: &[&str] = &["idea", "document", "file"];
+pub const MEMBER_TYPES: &[&str] = &["idea", "document", "file", "page"];
 /// Project lifecycle states.
 pub const PROJECT_STATUSES: &[&str] = &["active", "archived"];
 
@@ -54,6 +54,7 @@ pub struct MemberCounts {
     pub ideas: usize,
     pub documents: usize,
     pub files: usize,
+    pub pages: usize,
     /// Members still in `review = "draft"` (ideas + documents), i.e. pending approval.
     pub drafts: usize,
 }
@@ -96,6 +97,7 @@ pub struct ProjectMembers {
     pub ideas: Vec<MemberItem>,
     pub documents: Vec<MemberItem>,
     pub files: Vec<MemberItem>,
+    pub pages: Vec<MemberItem>,
 }
 
 /// Pending-approval ideas + documents (review = draft) for the portal queue.
