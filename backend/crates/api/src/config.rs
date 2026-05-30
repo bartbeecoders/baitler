@@ -107,7 +107,7 @@ impl Config {
     ///
     /// Reads (with defaults in parentheses):
     /// - `PORT` (8080), `BIND_HOST` (0.0.0.0)
-    /// - `CORS_ALLOWED_ORIGINS` (http://localhost:5173) — comma-separated
+    /// - `CORS_ALLOWED_ORIGINS` (http://localhost:8100) — comma-separated
     /// - `SURREAL_TIMEOUT_SECS` (5)
     /// - `SURREAL_URL` (rocksdb://./data/surreal.db), `SURREAL_USER`,
     ///   `SURREAL_PASS`,
@@ -134,7 +134,7 @@ impl Config {
 
         let cors_allowed_origins = parse_cors_origins(
             &env::var("CORS_ALLOWED_ORIGINS")
-                .unwrap_or_else(|_| "http://localhost:5173".to_string()),
+                .unwrap_or_else(|_| "http://localhost:8100".to_string()),
         )?;
         if cors_allowed_origins.is_empty() {
             tracing::warn!(
@@ -342,7 +342,7 @@ mod tests {
         let cfg = Config::from_env().expect("defaults should be valid");
         assert_eq!(cfg.bind_addr.port(), 8080);
         assert!(cfg.bind_addr.ip().is_unspecified());
-        assert_eq!(cfg.cors_allowed_origins, vec!["http://localhost:5173"]);
+        assert_eq!(cfg.cors_allowed_origins, vec!["http://localhost:8100"]);
         assert_eq!(cfg.db_timeout, Duration::from_secs(5));
         assert_eq!(cfg.surreal.url, "rocksdb://./data/surreal.db");
         assert_eq!(cfg.surreal.namespace, "baitler");

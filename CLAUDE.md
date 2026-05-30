@@ -97,7 +97,7 @@ move in lockstep when adding a tool. Config: `MCP_ENABLED` (default true), `MCP_
 (optional bearer, constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
 JSON result. Full client setup (Claude Code, Hermes agent, other MCP tools) is in **`docs/mcp.md`**.
 
-Frontend (from `frontend/`): `npm run dev` (Vite, port 5173), `npm run build`
+Frontend (from `frontend/`): `npm run dev` (Vite, port 8100), `npm run build`
 (`tsc -b` + `vite build`), `npm run lint`, `npm run typecheck`, `npm test` (Vitest).
 Stack: React 19 + TS (strict) + Tailwind v4 + React Router 7 + TanStack Query 5 + Zustand;
 react-markdown + @tailwindcss/typography for Markdown. Heavy feature routes are lazy-loaded.

@@ -6,7 +6,7 @@ portal for Baitler (see the repo-root `README.md` and `plan.md` for the bigger p
 ## Scripts
 
 ```bash
-npm run dev        # Vite dev server (http://localhost:5173)
+npm run dev        # Vite dev server (http://localhost:8100)
 npm run build      # tsc -b && vite build  ->  dist/
 npm run typecheck  # tsc -b
 npm run lint       # eslint .

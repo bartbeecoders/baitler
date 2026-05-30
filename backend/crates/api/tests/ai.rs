@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 fn test_config() -> Config {
     Config {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        cors_allowed_origins: vec!["http://localhost:5173".to_string()],
+        cors_allowed_origins: vec!["http://localhost:8100".to_string()],
         db_timeout: Duration::from_secs(5),
         surreal: SurrealConfig {
             url: "memory".to_string(),
