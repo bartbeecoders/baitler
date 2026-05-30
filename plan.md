@@ -243,13 +243,13 @@ Phase 2). Each milestone is independently shippable.
 
 ### A — Knowledge model, search, activity, MVP loop
 
-- [ ] **11.1** Capability gate (blocking, do first): with a throwaway query against both the `kv-mem`
+- [x] **11.1** Capability gate (blocking, do first): with a throwaway query against both the `kv-mem`
   (tests) and `kv-rocksdb` (dev) engines, confirm the pinned `surrealdb` 2 build executes
   `DEFINE ANALYZER … TOKENIZERS class FILTERS lowercase,ascii` and `DEFINE INDEX … SEARCH ANALYZER … BM25`
   over an already-populated table inside a migration's `BEGIN/COMMIT`. Block 11.4/11.5 on this; if `SEARCH`
   is unavailable on the embedded engine, fall back to the existing `string::lowercase(...) CONTAINS`
   approach (as `ideas_repo::list_ideas` already does) and drop the analyzer.
-- [ ] **11.2** Migration `0006_knowledge.surql` (SCHEMAFULL, mirroring `0003_ideas.surql`). Define `project`:
+- [x] **11.2** Migration `0006_knowledge.surql` (SCHEMAFULL, mirroring `0003_ideas.surql`). Define `project`:
   `uuid` (UNIQUE index `project_uuid`), `owner`, `name`, `slug` (composite UNIQUE `project_slug` ON owner,slug),
   `summary` (Markdown DEFAULT ""), `status` DEFAULT "active" (active|archived), `created_at` DEFAULT
   `time::now()`, `updated_at` VALUE `time::now()`; index `project_owner` ON owner,status. Define one polymorphic
@@ -259,7 +259,7 @@ Phase 2). Each milestone is independently shippable.
   `kn_member_owner` ON owner,kind and `kn_member_src` ON owner,src_type,src_id and `kn_member_dst` ON
   owner,dst_type,dst_id. Files are members-only (no file↔file links); constrain `dst_type` validation to the
   four types that matter.
-- [ ] **11.3** Add a `review` field (draft|published, DEFAULT "published") to `idea` and `document` in the same
+- [x] **11.3** Add a `review` field (draft|published, DEFAULT "published") to `idea` and `document` in the same
   migration, plus optional `project_id` (`option<string>`, DEFAULT NONE) on `idea`, `document`, and `file`.
   Existing rows default `review="published"` so nothing already captured is hidden; agent writes pass
   `review="draft"` explicitly, human/portal writes default to published. Do NOT overload the existing closed
@@ -267,13 +267,13 @@ Phase 2). Each milestone is independently shippable.
   stays untouched. Add the new fields to the SCHEMAFULL migration, the `CREATE CONTENT`/`UPDATE SET` builders in
   `ideas/repo.rs` and `documents/repo.rs`, and `IdeaDto`/`DocumentDto`. Add a `document_review` index for the
   review-queue/publish queries.
-- [ ] **11.4** Migration `0007_search.surql`: a `kn_text` analyzer and `SEARCH` (BM25) indexes over already-existing
+- [x] **11.4** Migration `0007_search.surql`: a `kn_text` analyzer and `SEARCH` (BM25) indexes over already-existing
   prose — `idea(title,body)`, `document(title,body)`, `project(name,summary)`, `file(name)` — gated on 11.1. No
   schema change to the indexed tables. Add `doc_repo::search_documents` and `knowledge::repo::search` running a
   per-type `@@`/`search::score()` query per table and returning **typed sections** each internally ranked, ordered
   overall by a stable secondary key (`updated_at`); do not promise a fake unified cross-table relevance rank.
   Snippets via `search::highlight()` or a manual substring around the match.
-- [ ] **11.5** New `knowledge/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `ideas/` verbatim. Project
+- [x] **11.5** New `knowledge/` module (`mod.rs,model.rs,repo.rs,routes.rs`) following `ideas/` verbatim. Project
   CRUD (`PROJECT_SELECT` projection, owner-scoped, slug generated from `name` with `-2` collision suffix).
   Membership/link repo: `add_member`/`remove_member`/`list_members(project, type?)`; `link_items`/`unlink_items`
   written as BOTH directed `kn_member kind='link'` rows (mirroring `link_ideas`' symmetric write — never a
@@ -281,14 +281,14 @@ Phase 2). Each milestone is independently shippable.
   **both** endpoints exist and are owner-owned before inserting an edge (mirror `ideas_link`'s existence checks).
   Wire a `kn_member` scrub into `delete_idea`/`delete_document`/`delete_file` (and `delete_project` removes
   memberships only, never the underlying items) — mirroring the Phase 5 link-scrub-on-delete precedent.
-- [ ] **11.6** Thread attribution: resolve an `Actor { owner, agent: Option<String> }` once in `mcp::mod.rs::handle`
+- [x] **11.6** Thread attribution: resolve an `Actor { owner, agent: Option<String> }` once in `mcp::mod.rs::handle`
   (the only function with headers) and pass it as a parameter through `dispatch` → `handle_tools_call` →
   `tools::call(state, &actor, name, args)`, changing those signatures and the per-tool fns to read `&actor.owner`
   in place of the `DEV_OWNER` literals. The default for the open/legacy path is `Actor { owner: DEV_OWNER,
   agent: None }`, so the refactor is behaviour-preserving. The agent label comes from an optional `X-Baitler-Agent`
   header (or a per-token label once 11.13 lands) — no agent table required for v1. This single seam is the
   prerequisite for activity attribution and the Phase 2 owner swap.
-- [ ] **11.7** Migration `0008_activity.surql`: append-only `activity` table — `uuid` UNIQUE, `owner`, `agent`
+- [x] **11.7** Migration `0008_activity.surql`: append-only `activity` table — `uuid` UNIQUE, `owner`, `agent`
   (`option<string>`, NONE = human/web), `action` (e.g. idea.create, document.publish, file.delete), `target_type`,
   `target_id`, `target_title`, `project_id` (`option<string>`), `summary`, `created_at`; index `activity_owner` ON
   owner,created_at. A central helper appended at the end of each **mutating** write tool
@@ -296,7 +296,7 @@ Phase 2). Each milestone is independently shippable.
   `folders_create`, `projects_*`); read tools log nothing. Wrap the content write + activity insert in one
   SurrealDB transaction so "exactly one activity row per write" holds under failure (else document it as
   best-effort). Never persist tool argument bodies verbatim — a derived summary + target id only.
-- [ ] **11.8** New MCP tools (each owner-scoped via `&actor.owner`, mirroring `ideas_*` validation helpers):
+- [x] **11.8** New MCP tools (each owner-scoped via `&actor.owner`, mirroring `ideas_*` validation helpers):
   `projects_{list,get,create,update,delete}` (`projects_get` resolves member counts + typed summaries);
   `projects_add_item`/`projects_remove_item` (set/clear membership for an idea/document/file); `knowledge_link`/
   `knowledge_unlink` (generic cross-type edge); `knowledge_backlinks`; `knowledge_search` (typed, ranked hits
@@ -304,13 +304,22 @@ Phase 2). Each milestone is independently shippable.
   `activity_list` (filter by project/agent/since). Extend existing `ideas_{create,update}` and
   `documents_{create,update}` schemas with optional `project_id` and `review` args. Update the `call()` match, the
   `known` name list, and the `assert_eq!` count in `mcp/tools.rs` in the same commit.
-- [ ] **11.9** Offline end-to-end acceptance test driving the JSON-RPC surface as an agent would, no egress:
+- [x] **11.9** Offline end-to-end acceptance test driving the JSON-RPC surface as an agent would, no egress:
   `initialize` → `tools/list` → `folders_create` → `files_write` → `ideas_create` (review=draft) →
   `projects_create` + `projects_add_item` → `documents_create` (review=draft) → `knowledge_link` →
   `knowledge_search` (asserts the seeded items rank) → `documents_export` format=markdown/html (asserts bytes) →
   `ai_chat` against the `mock` provider grounded via `context`. Cap assembled `context` (bound the number of
   sources and per-source chars) before folding into `build_system`. PDF/DOCX assertions stay conditional on
   `CHROME_BIN`/`PANDOC_BIN`, as the Phase 7 tests already are.
+
+> **Milestone A shipped** (branch `phase-11-agentic`, PR #1; backend green: 94 tests, clippy/fmt).
+> As-built deltas from the design above: membership is the direct `project_id` pointer + a dedicated
+> **`kn_link`** link table (instead of one `kn_member` table with `kind ∈ {member,link}`) — simpler,
+> indexed member queries, one link system. The FTS analyzer and SEARCH indexes are split across
+> migrations `0007`/`0008` (the runner wraps each file in one transaction and an index can't reference
+> an analyzer defined in the same uncommitted txn — verified with throwaway probes); activity is
+> migration `0009`. `knowledge/routes.rs` (REST) is deferred to 11.12 with the portal; the MCP tools
+> are the agentic interface. Activity logging is best-effort (not in the write's transaction).
 
 ### B — Publishing & export
 
