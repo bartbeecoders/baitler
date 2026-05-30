@@ -329,7 +329,7 @@ Phase 2). Each milestone is independently shippable.
   where the host allows a real sandbox), and add a stricter publish-profile sanitizer that strips remote resource
   loads (external `<img>/<iframe>/<link>`, `srcset`, oversized `data:` URIs) before any render. Document
   `CHROME_NETNS`/sandbox env in `.env.example`. Keep the existing 30s timeout + output-size cap.
-- [ ] **11.11** `documents_publish` and `collection_export` reusing the shared pathway: render a document (or a
+- [x] **11.11** `documents_publish` and `collection_export` reusing the shared pathway: render a document (or a
   project's ordered member documents concatenated with a title page + combined TOC) to a self-contained, sanitized
   HTML / Markdown / PDF / DOCX artifact via `convert::export` (unchanged), and persist it as an owner-scoped file —
   mirroring `files_write`'s full pattern (`storage.put(key, bytes)` AND `files_repo::create_file(...)` with

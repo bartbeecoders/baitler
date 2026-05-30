@@ -572,3 +572,94 @@ async fn agentic_loop_end_to_end() {
         "read-only tools record no activity"
     );
 }
+
+/// Publishing: render a document and a whole project to stored files, and flip
+/// the document's review state. Uses markdown (no Chrome/Pandoc needed → CI-safe).
+#[tokio::test]
+async fn publishing_persists_artifacts_and_marks_published() {
+    let base = spawn_app(enabled()).await;
+    let client = Client::new();
+    let agent = "publisher";
+
+    let project = tool_call(
+        &client,
+        &base,
+        agent,
+        "projects_create",
+        json!({ "name": "Handbook", "summary": "the team handbook" }),
+    )
+    .await;
+    let pid = project["id"].as_str().unwrap().to_string();
+
+    let doc = tool_call(
+        &client,
+        &base,
+        agent,
+        "documents_create",
+        json!({ "title": "Chapter 1", "body": "<h1>Intro</h1><p>hello</p>", "project_id": pid }),
+    )
+    .await;
+    assert_eq!(doc["review"], "draft");
+    let did = doc["id"].as_str().unwrap().to_string();
+
+    // Publish the document as markdown → a stored file, review flips to published.
+    let published = tool_call(
+        &client,
+        &base,
+        agent,
+        "documents_publish",
+        json!({ "id": did, "format": "markdown" }),
+    )
+    .await;
+    assert_eq!(published["published"], true);
+    let file = &published["file"];
+    assert!(file["name"].as_str().unwrap().ends_with(".md"));
+    assert_eq!(file["mime"], "text/markdown; charset=utf-8");
+    let fid = file["id"].as_str().unwrap().to_string();
+
+    // The artifact is a real, listable, readable file.
+    let listed = tool_call(&client, &base, agent, "files_list", json!({})).await;
+    assert!(listed["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["id"] == fid));
+
+    // The document is now published.
+    let got = tool_call(&client, &base, agent, "documents_get", json!({ "id": did })).await;
+    assert_eq!(got["review"], "published");
+
+    // Export the whole project to one markdown artifact (title + contents + the doc).
+    let collection = tool_call(
+        &client,
+        &base,
+        agent,
+        "collection_export",
+        json!({ "project_id": pid, "format": "markdown" }),
+    )
+    .await;
+    assert_eq!(collection["exported"], true);
+    assert_eq!(collection["documents"], 1);
+    assert!(collection["file"]["name"]
+        .as_str()
+        .unwrap()
+        .ends_with(".md"));
+
+    // Both actions are attributed to the agent.
+    let activity = tool_call(
+        &client,
+        &base,
+        agent,
+        "activity_list",
+        json!({ "agent": agent }),
+    )
+    .await;
+    let actions: Vec<&str> = activity["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["action"].as_str())
+        .collect();
+    assert!(actions.contains(&"document.publish"));
+    assert!(actions.contains(&"project.export"));
+}

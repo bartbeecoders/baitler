@@ -114,6 +114,9 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "knowledge_unlink" => knowledge_unlink(state, owner, args).await,
         "knowledge_backlinks" => knowledge_backlinks(state, owner, args).await,
         "knowledge_search" => knowledge_search(state, owner, args).await,
+        // Publishing & export
+        "documents_publish" => documents_publish(state, owner, args).await,
+        "collection_export" => collection_export(state, owner, args).await,
         // Activity / provenance
         "activity_list" => activity_list(state, owner, args).await,
         // AI
@@ -961,6 +964,120 @@ async fn activity_list(state: &AppState, owner: &str, args: &Value) -> ToolResul
     Ok(json!({ "activity": dtos }))
 }
 
+// ── Publishing & export ───────────────────────────────────────────────────────
+
+/// Minimal HTML escape for titles interpolated into generated markup.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Render bytes to an owner-scoped stored file, mirroring `files_write`'s
+/// storage-then-record pattern with rollback. Returns the file DTO as a value.
+async fn persist_artifact(
+    state: &AppState,
+    owner: &str,
+    bytes: &[u8],
+    filename: &str,
+    mime: &str,
+) -> Result<Value, ToolError> {
+    let storage_key = Uuid::new_v4().to_string();
+    state
+        .storage
+        .put(&storage_key, bytes)
+        .await
+        .map_err(AppError::from)?;
+    match files_repo::create_file(
+        &state.db,
+        owner,
+        &storage_key,
+        filename,
+        mime,
+        bytes.len() as i64,
+        None,
+        &storage_key,
+    )
+    .await
+    {
+        Ok(file) => Ok(json!(FileDto::from(file))),
+        Err(e) => {
+            let _ = state.storage.delete(&storage_key).await;
+            Err(e.into())
+        }
+    }
+}
+
+fn parse_target(args: &Value) -> Result<TargetFormat, ToolError> {
+    match opt_trimmed(args, "format") {
+        Some(f) => TargetFormat::parse(&f)
+            .ok_or_else(|| invalid("unsupported format (html|markdown|pdf|docx)")),
+        None => Ok(TargetFormat::Pdf),
+    }
+}
+
+/// Render a stored document to a self-contained artifact, persist it as an
+/// owner-scoped file, and mark the document published. Synchronous — the only
+/// slow path is one bounded Chrome/Pandoc call (pdf/docx need those binaries).
+async fn documents_publish(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let target = parse_target(args)?;
+    let doc = doc_repo::get_document(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    let bytes = convert::export(&doc.body, SourceFormat::Html, target)
+        .await
+        .map_err(AppError::from)?;
+    let filename = format!("{}.{}", sanitize_filename(&doc.title), target.extension());
+    let file = persist_artifact(state, owner, &bytes, &filename, target.content_type()).await?;
+    // Publishing approves the draft.
+    doc_repo::update_document(&state.db, owner, &id, None, None, Some("published")).await?;
+    Ok(json!({
+        "published": true, "id": id, "title": doc.title,
+        "format": target.extension(), "file": file
+    }))
+}
+
+/// Export a whole project — its member documents concatenated under a title page
+/// and table of contents — to a single artifact persisted as an owner-scoped file.
+async fn collection_export(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let project_id = req_str(args, "project_id")?;
+    let project = kn::get_project(&state.db, owner, &project_id)
+        .await?
+        .ok_or_else(not_found)?;
+    let target = parse_target(args)?;
+    let members = kn::project_members(&state.db, owner, &project_id).await?;
+
+    let mut html = format!("<h1>{}</h1>", esc(&project.name));
+    if !project.summary.is_empty() {
+        html.push_str(&convert::md_to_html(&project.summary));
+    }
+    if !members.documents.is_empty() {
+        html.push_str("<h2>Contents</h2><ul>");
+        for m in &members.documents {
+            html.push_str(&format!("<li>{}</li>", esc(&m.title)));
+        }
+        html.push_str("</ul>");
+        for m in &members.documents {
+            if let Some(doc) = doc_repo::get_document(&state.db, owner, &m.id).await? {
+                html.push_str(&format!("<hr><h2>{}</h2>", esc(&doc.title)));
+                html.push_str(&doc.body);
+            }
+        }
+    }
+
+    let bytes = convert::export(&html, SourceFormat::Html, target)
+        .await
+        .map_err(AppError::from)?;
+    let name = opt_trimmed(args, "filename").unwrap_or_else(|| project.slug.clone());
+    let filename = format!("{}.{}", sanitize_filename(&name), target.extension());
+    let file = persist_artifact(state, owner, &bytes, &filename, target.content_type()).await?;
+    Ok(json!({
+        "exported": true, "id": project_id, "name": project.name,
+        "documents": members.documents.len(), "format": target.extension(), "file": file
+    }))
+}
+
 // ── Tool catalog (advertised via `tools/list`) ────────────────────────────────
 
 /// Build one tool definition.
@@ -1304,6 +1421,28 @@ pub fn definitions() -> Vec<Value> {
             }),
             &["q"],
         ),
+        // Publishing & export
+        def(
+            "documents_publish",
+            "Render a document to a self-contained artifact (html|markdown|pdf|docx, default pdf), \
+             save it as a file, and mark the document published. pdf needs Chrome, docx needs Pandoc.",
+            json!({
+                "id": str_schema("document id"),
+                "format": str_schema("html | markdown | pdf | docx (default pdf)"),
+            }),
+            &["id"],
+        ),
+        def(
+            "collection_export",
+            "Export a whole project (its member documents, with a title page + contents) to one \
+             artifact saved as a file.",
+            json!({
+                "project_id": str_schema("project id"),
+                "format": str_schema("html | markdown | pdf | docx (default pdf)"),
+                "filename": str_schema("base name for the result file (optional)"),
+            }),
+            &["project_id"],
+        ),
         // Activity / provenance
         def(
             "activity_list",
@@ -1379,6 +1518,8 @@ mod tests {
             "knowledge_unlink",
             "knowledge_backlinks",
             "knowledge_search",
+            "documents_publish",
+            "collection_export",
             "activity_list",
             "ai_providers",
             "ai_chat",

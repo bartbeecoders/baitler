@@ -107,6 +107,7 @@ pub fn entry_for(tool: &str, result: &Value) -> Option<ActivityEntry> {
         "documents_update" => ("document.update", "document"),
         "documents_delete" => ("document.delete", "document"),
         "documents_publish" => ("document.publish", "document"),
+        "collection_export" => ("project.export", "project"),
         "files_write" => ("file.create", "file"),
         "files_delete" => ("file.delete", "file"),
         "folders_create" => ("folder.create", "folder"),
