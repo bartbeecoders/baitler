@@ -23,6 +23,7 @@ surrealdb = { version = "2", default-features = false, features = [
     "protocol-ws",
     "protocol-http",
     "kv-mem",
+    "kv-rocksdb",
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

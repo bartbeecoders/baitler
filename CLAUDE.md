@@ -69,12 +69,27 @@ scaffolded** (Phase 3: Vite + React + TS at `frontend/`). Mobile (Phase 9) is no
 
 Backend (from `backend/`, or pass `--manifest-path backend/Cargo.toml`):
 
-- `cargo run` — start the API. Defaults to `SURREAL_URL=memory` (embedded, in-process
-  SurrealDB), so **no `surreal` server or Docker is needed** for dev/tests. Endpoints:
-  `GET /health` (DB-ping readiness), `GET /version`.
-- `cargo test` — 18 unit + integration tests (embedded `memory` DB, ephemeral ports).
+- `cargo run` — start the API. Defaults to `SURREAL_URL=rocksdb://./data/surreal.db`
+  (embedded, **file-based** SurrealDB via the `kv-rocksdb` feature; data persists across
+  restarts and the directory is auto-created), so **no `surreal` server or Docker is
+  needed** for dev. `SURREAL_URL=memory` selects the ephemeral in-process engine instead.
+  Endpoints: `GET /health` (DB-ping readiness), `GET /version`.
+- `cargo test` — unit + integration tests (each passes `memory` explicitly for an
+  ephemeral, isolated DB; ephemeral ports).
 - `cargo clippy --all-targets -- -D warnings`, `cargo fmt --all`.
 - Bind host is `BIND_HOST` (not `HOST` — that collides with conda/build tooling).
+
+**MCP server** (`src/mcp/`): Baitler is also an MCP server. The `baitler-api` process
+serves MCP over **Streamable HTTP** at `POST /mcp` (in-process, reusing the same
+repos/DB — JSON-RPC 2.0, JSON-response variant, `GET`/`DELETE`→405). A second binary
+`baitler-mcp` (`src/bin/mcp_stdio.rs`) is a **stdio↔HTTP bridge** for clients that only
+launch stdio servers; it forwards to a running server's `/mcp` and never opens the DB
+(no RocksDB lock conflict). 24 tools cover ideas/documents/files/folders/ai/export/health,
+backed by the same validation as the REST handlers (owner-scoped to the dev owner until
+auth lands). Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN` (optional bearer,
+constant-time checked, required header when set). Binary blobs (pdf/docx/file reads) are
+Base64 in the JSON result. Full client setup (Claude Code, Hermes agent, other MCP tools)
+is in **`docs/mcp.md`**.
 
 Frontend (from `frontend/`): `npm run dev` (Vite, port 5173), `npm run build`
 (`tsc -b` + `vite build`), `npm run lint`, `npm run typecheck`, `npm test` (Vitest).

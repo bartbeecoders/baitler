@@ -21,6 +21,13 @@ interface ModalProps {
 export function Modal({ open, onClose, title, children, className }: ModalProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  // Latch the latest onClose so the focus/scroll effect doesn't tear down and
+  // re-run (stealing focus from inputs) when callers pass a fresh callback
+  // identity on every render.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -35,7 +42,7 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !panel) return;
@@ -68,7 +75,7 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
       document.body.style.overflow = prevOverflow;
       triggerRef.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -88,18 +95,18 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
           className,
         )}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+        <h2 className="mb-4 pr-8 text-lg font-semibold">{title}</h2>
         {children}
+        {/* Rendered last so the focus trap's initial target is a form control,
+            not the close affordance. */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
     </div>
   );

@@ -2,8 +2,10 @@
 //!
 //! Everything is read once at startup into an immutable [`Config`]. Defaults are
 //! chosen so the server runs out of the box with zero external dependencies:
-//! `SURREAL_URL=memory` spins up an embedded in-process datastore, so neither a
-//! `surreal` server nor Docker is required for local development or tests.
+//! `SURREAL_URL=rocksdb://./data/surreal.db` spins up an embedded, file-based
+//! datastore whose data survives restarts, so neither a `surreal` server nor
+//! Docker is required for local development. (Tests pass `memory` explicitly for
+//! an ephemeral, isolated datastore.)
 //!
 //! Validation is fail-fast: anything that would otherwise surface as a confusing
 //! runtime panic or a silent misconfiguration (an unparseable CORS origin, a
@@ -54,8 +56,21 @@ pub struct Config {
     pub surreal: SurrealConfig,
     /// File storage settings.
     pub storage: StorageConfig,
+    /// Model Context Protocol (MCP) server settings.
+    pub mcp: McpConfig,
     /// 32-byte key for encrypting secrets at rest (derived from the app secret).
     pub secret_key: [u8; 32],
+}
+
+/// Settings for the built-in MCP server (the `/mcp` endpoint).
+#[derive(Clone)]
+pub struct McpConfig {
+    /// Whether the `/mcp` endpoint is mounted at all.
+    pub enabled: bool,
+    /// Optional bearer token. When set, every `/mcp` request must present
+    /// `Authorization: Bearer <token>`; when unset, the endpoint is open (rely
+    /// on a localhost bind / network controls instead).
+    pub auth_token: Option<String>,
 }
 
 /// File storage settings.
@@ -73,7 +88,8 @@ pub struct StorageConfig {
 #[derive(Clone)]
 pub struct SurrealConfig {
     /// Connection endpoint understood by the SurrealDB `any` engine, e.g.
-    /// `memory`, `ws://127.0.0.1:8000`, `http://…`, `rocksdb://path`.
+    /// `rocksdb://path` (file-based, the default), `memory`,
+    /// `ws://127.0.0.1:8000`, `http://…`.
     pub url: String,
     /// Root username for remote servers. `None` for the embedded `memory`
     /// engine, which has no auth. Must be set together with `password`.
@@ -93,8 +109,10 @@ impl Config {
     /// - `PORT` (8080), `BIND_HOST` (0.0.0.0)
     /// - `CORS_ALLOWED_ORIGINS` (http://localhost:5173) — comma-separated
     /// - `SURREAL_TIMEOUT_SECS` (5)
-    /// - `SURREAL_URL` (memory), `SURREAL_USER`, `SURREAL_PASS`,
+    /// - `SURREAL_URL` (rocksdb://./data/surreal.db), `SURREAL_USER`,
+    ///   `SURREAL_PASS`,
     ///   `SURREAL_NS` (baitler), `SURREAL_DB` (baitler)
+    /// - `MCP_ENABLED` (true), `MCP_AUTH_TOKEN` (unset → open `/mcp` endpoint)
     ///
     /// Note: the bind host is `BIND_HOST`, not `HOST` — the latter is commonly
     /// set by shells/build tooling (e.g. conda sets it to a target triple) and
@@ -147,7 +165,8 @@ impl Config {
         }
 
         let surreal = SurrealConfig {
-            url: env::var("SURREAL_URL").unwrap_or_else(|_| "memory".to_string()),
+            url: env::var("SURREAL_URL")
+                .unwrap_or_else(|_| "rocksdb://./data/surreal.db".to_string()),
             username,
             password,
             namespace: env::var("SURREAL_NS").unwrap_or_else(|_| "baitler".to_string()),
@@ -165,6 +184,13 @@ impl Config {
             local_path: env::var("STORAGE_LOCAL_PATH")
                 .unwrap_or_else(|_| "./data/files".to_string()),
             max_upload_bytes: (max_upload_mb * 1024 * 1024) as usize,
+        };
+
+        let mcp = McpConfig {
+            // Enabled by default; set MCP_ENABLED=false to remove the endpoint.
+            enabled: parse_bool(env::var("MCP_ENABLED").ok(), true)
+                .map_err(|raw| ConfigError::invalid("MCP_ENABLED", raw, "expected a boolean"))?,
+            auth_token: non_empty(env::var("MCP_AUTH_TOKEN").ok()),
         };
 
         // Key for encrypting stored secrets (e.g. LLM API keys). A dev default
@@ -187,8 +213,23 @@ impl Config {
             db_timeout,
             surreal,
             storage,
+            mcp,
             secret_key,
         })
+    }
+}
+
+/// Parse a permissive boolean env value. Accepts `true/false`, `1/0`,
+/// `yes/no`, `on/off` (case-insensitive). Returns the raw value on error so the
+/// caller can build a precise [`ConfigError`].
+fn parse_bool(value: Option<String>, default: bool) -> Result<bool, String> {
+    match value.as_deref().map(str::trim) {
+        None | Some("") => Ok(default),
+        Some(v) => match v.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => Ok(true),
+            "false" | "0" | "no" | "off" => Ok(false),
+            _ => Err(v.to_string()),
+        },
     }
 }
 
@@ -249,7 +290,18 @@ impl fmt::Debug for Config {
             .field("db_timeout", &self.db_timeout)
             .field("surreal", &self.surreal)
             .field("storage", &self.storage)
+            .field("mcp", &self.mcp)
             .field("secret_key", &"***")
+            .finish()
+    }
+}
+
+// Hand-written so the MCP bearer token (a credential) never lands in logs.
+impl fmt::Debug for McpConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpConfig")
+            .field("enabled", &self.enabled)
+            .field("auth_token", &self.auth_token.as_ref().map(|_| "***"))
             .finish()
     }
 }
@@ -272,6 +324,8 @@ mod tests {
         "SURREAL_PASS",
         "SURREAL_NS",
         "SURREAL_DB",
+        "MCP_ENABLED",
+        "MCP_AUTH_TOKEN",
     ];
 
     fn clear_env() {
@@ -290,7 +344,7 @@ mod tests {
         assert!(cfg.bind_addr.ip().is_unspecified());
         assert_eq!(cfg.cors_allowed_origins, vec!["http://localhost:5173"]);
         assert_eq!(cfg.db_timeout, Duration::from_secs(5));
-        assert_eq!(cfg.surreal.url, "memory");
+        assert_eq!(cfg.surreal.url, "rocksdb://./data/surreal.db");
         assert_eq!(cfg.surreal.namespace, "baitler");
         assert!(cfg.surreal.username.is_none());
     }
@@ -356,6 +410,64 @@ mod tests {
         let ConfigError::Invalid { name, .. } = err;
         assert_eq!(name, "SURREAL_USER/SURREAL_PASS");
         clear_env();
+    }
+
+    #[test]
+    fn mcp_defaults_enabled_without_token() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        env::remove_var("MCP_ENABLED");
+        env::remove_var("MCP_AUTH_TOKEN");
+
+        let cfg = Config::from_env().expect("defaults should be valid");
+        assert!(cfg.mcp.enabled);
+        assert!(cfg.mcp.auth_token.is_none());
+    }
+
+    #[test]
+    fn mcp_can_be_disabled_and_tokened() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        env::set_var("MCP_ENABLED", "off");
+        env::set_var("MCP_AUTH_TOKEN", "  s3cret  ");
+
+        let cfg = Config::from_env().expect("valid");
+        assert!(!cfg.mcp.enabled);
+        assert_eq!(cfg.mcp.auth_token.as_deref(), Some("s3cret"));
+        clear_env();
+    }
+
+    #[test]
+    fn invalid_mcp_enabled_is_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+        env::set_var("MCP_ENABLED", "maybe");
+
+        let err = Config::from_env().unwrap_err();
+        let ConfigError::Invalid { name, .. } = err;
+        assert_eq!(name, "MCP_ENABLED");
+        clear_env();
+    }
+
+    #[test]
+    fn parse_bool_accepts_common_spellings() {
+        assert_eq!(parse_bool(None, true), Ok(true));
+        assert_eq!(parse_bool(Some("".into()), false), Ok(false));
+        assert_eq!(parse_bool(Some("TRUE".into()), false), Ok(true));
+        assert_eq!(parse_bool(Some("0".into()), true), Ok(false));
+        assert_eq!(parse_bool(Some("on".into()), false), Ok(true));
+        assert!(parse_bool(Some("nope".into()), false).is_err());
+    }
+
+    #[test]
+    fn mcp_debug_redacts_token() {
+        let cfg = McpConfig {
+            enabled: true,
+            auth_token: Some("super-secret-token".to_string()),
+        };
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("super-secret-token"), "token leaked");
+        assert!(rendered.contains("***"));
     }
 
     #[test]

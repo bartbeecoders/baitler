@@ -8,7 +8,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, StorageConfig, SurrealConfig};
+use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::AppState;
 use reqwest::header::{
     ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
@@ -40,6 +40,10 @@ fn test_config() -> Config {
                 .to_string_lossy()
                 .into_owned(),
             max_upload_bytes: 16 * 1024 * 1024,
+        },
+        mcp: McpConfig {
+            enabled: true,
+            auth_token: None,
         },
         secret_key: [7u8; 32],
     }

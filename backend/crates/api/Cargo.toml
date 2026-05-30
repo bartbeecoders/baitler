@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Baitler HTTP API — Rust/Axum backend with SurrealDB."
+# Two binaries (the API server + the `baitler-mcp` stdio bridge); make a bare
+# `cargo run` start the server so existing scripts/docs keep working.
+default-run = "baitler-api"
 
 # Library exposes the app builder + modules so integration tests (and future
 # crates) can construct and exercise the server in-process. The binary is a thin
@@ -16,6 +19,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "baitler-api"
 path = "src/main.rs"
+
+# stdio↔HTTP MCP bridge for clients that only speak stdio. Forwards newline-
+# delimited JSON-RPC to a running Baitler server's `/mcp` endpoint.
+[[bin]]
+name = "baitler-mcp"
+path = "src/bin/mcp_stdio.rs"
 
 [dependencies]
 axum.workspace = true

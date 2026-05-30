@@ -38,3 +38,15 @@ It will serve as a personal assistant and data organizer.
 
 
 Use the git repo at: https://github.com/bartbeecoders/baitler.git
+
+
+## Base agentic idea
+
+I want to use MCP (Model Context Protocol) to enable agentic capabilities in the application.
+The idea is that I will give claude code instructions to document, illustrate certain projects I'm working on. This documentation wil be stored in Baitler. So Baitler will become my personal knowledge base and assistant.
+Through the MCP server, the ai agents (claude code, grok code, hermes agent etc.) will be able to:
+- organse the knowledge base
+- make web pages/markdown/pdf/office documents so the knowledge is human readable and exportable
+- access the data in Baitler and use it to answer questions, generate content, and perform other tasks.
+
+Work this idea out completely and add this to the plan.md.

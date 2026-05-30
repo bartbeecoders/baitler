@@ -2,6 +2,7 @@
 
 mod health;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderValue, Method};
 use axum::routing::get;
@@ -12,6 +13,10 @@ use tower_http::trace::TraceLayer;
 use crate::error::AppError;
 use crate::state::AppState;
 
+/// Upper bound on an MCP request body. Tool calls can carry Base64 blobs
+/// (`files_write`, exports), so this is more generous than the default 2 MB.
+const MCP_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
 /// Build the application router with all routes and middleware applied.
 pub fn router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors_allowed_origins);
@@ -19,6 +24,10 @@ pub fn router(state: AppState) -> Router {
     let ideas = crate::ideas::routes::router();
     let ai = crate::ai::routes::router();
     let documents = crate::documents::routes::router();
+    // The MCP server reuses the same state/repos. Its routes carry their own,
+    // larger body limit for Base64 tool payloads.
+    let mcp =
+        crate::mcp::router(&state.config.mcp).layer(DefaultBodyLimit::max(MCP_MAX_BODY_BYTES));
 
     Router::new()
         .route("/health", get(health::health))
@@ -27,6 +36,7 @@ pub fn router(state: AppState) -> Router {
         .merge(ideas)
         .merge(ai)
         .merge(documents)
+        .merge(mcp)
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .layer(cors)

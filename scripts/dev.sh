@@ -23,14 +23,24 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 # ── SurrealDB ──
-if command -v surreal >/dev/null 2>&1; then
-  echo "[dev] starting SurrealDB on ${SURREAL_URL:-ws://127.0.0.1:8000}"
-  surreal start --user "${SURREAL_USER:-root}" --pass "${SURREAL_PASS:-root}" \
-    "rocksdb:./data/surreal.db" &
-  pids+=($!)
+# The backend embeds SurrealDB and, by default, opens a file-based RocksDB store
+# itself (SURREAL_URL=rocksdb://./data/surreal.db) — no separate server needed.
+# Only spin up a standalone `surreal` server when SURREAL_URL points at one
+# (ws:// or http://); otherwise a server on the same rocksdb path would collide
+# with the backend on RocksDB's exclusive lock.
+if [[ "${SURREAL_URL:-}" == ws://* || "${SURREAL_URL:-}" == wss://* \
+   || "${SURREAL_URL:-}" == http://* || "${SURREAL_URL:-}" == https://* ]]; then
+  if command -v surreal >/dev/null 2>&1; then
+    echo "[dev] starting SurrealDB server (SURREAL_URL=${SURREAL_URL})"
+    surreal start --user "${SURREAL_USER:-root}" --pass "${SURREAL_PASS:-root}" \
+      "rocksdb:./data/surreal.db" &
+    pids+=($!)
+  else
+    echo "[dev] WARN: SURREAL_URL is a server URL but 'surreal' is not on PATH — skipping DB."
+    echo "        Install: https://surrealdb.com/install"
+  fi
 else
-  echo "[dev] WARN: 'surreal' not found on PATH — skipping DB."
-  echo "        Install: https://surrealdb.com/install"
+  echo "[dev] using embedded SurrealDB (SURREAL_URL=${SURREAL_URL:-rocksdb://./data/surreal.db})"
 fi
 
 # ── Backend (Rust API) ──

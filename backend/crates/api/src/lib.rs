@@ -16,6 +16,7 @@ pub mod error;
 pub mod files;
 pub mod ideas;
 pub mod llm;
+pub mod mcp;
 pub mod migrations;
 pub mod owner;
 pub mod routes;
