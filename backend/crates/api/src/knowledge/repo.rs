@@ -218,6 +218,7 @@ pub async fn project_members(db: &Db, owner: &str, project_id: &str) -> AppResul
         pages: members_of(db, owner, "page", project_id).await?,
         mindmaps: members_of(db, owner, "mindmap", project_id).await?,
         diagrams: members_of(db, owner, "diagram", project_id).await?,
+        superpages: members_of(db, owner, "superpage", project_id).await?,
     })
 }
 
@@ -266,6 +267,7 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         pages: members.pages.len(),
         mindmaps: members.mindmaps.len(),
         diagrams: members.diagrams.len(),
+        superpages: members.superpages.len(),
         drafts,
     })
 }
@@ -312,7 +314,7 @@ pub async fn item_exists(db: &Db, owner: &str, kind: &str, id: &str) -> AppResul
 }
 
 /// Best-effort display title/name for an item (None if missing).
-async fn resolve_title(db: &Db, owner: &str, kind: &str, id: &str) -> AppResult<Option<String>> {
+pub async fn resolve_title(db: &Db, owner: &str, kind: &str, id: &str) -> AppResult<Option<String>> {
     let table = any_table(kind)?;
     let tcol = title_col(table);
     let mut res = db
@@ -452,6 +454,7 @@ pub async fn search(db: &Db, owner: &str, q: &str, limit: usize) -> AppResult<Se
         pages: search_two(db, owner, "page", "title", "body", q, limit).await?,
         mindmaps: search_two(db, owner, "mindmap", "title", "search_text", q, limit).await?,
         diagrams: search_two(db, owner, "diagram", "title", "search_text", q, limit).await?,
+        superpages: search_two(db, owner, "superpage", "title", "search_text", q, limit).await?,
     })
 }
 

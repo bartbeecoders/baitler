@@ -28,6 +28,7 @@ pub fn router(state: AppState) -> Router {
     let pages = crate::pages::routes::router();
     let mindmaps = crate::mindmap::routes::router();
     let diagrams = crate::diagrams::routes::router();
+    let superpages = crate::superpage::routes::router();
     let cli = crate::cli::routes::router();
     // The MCP server reuses the same state/repos. Its routes carry their own,
     // larger body limit for Base64 tool payloads.
@@ -48,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .merge(pages)
         .merge(mindmaps)
         .merge(diagrams)
+        .merge(superpages)
         .merge(cli)
         .merge(mcp)
         .fallback(not_found)

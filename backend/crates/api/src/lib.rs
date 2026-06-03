@@ -27,6 +27,7 @@ pub mod owner;
 pub mod pages;
 pub mod routes;
 pub mod slug;
+pub mod superpage;
 pub mod state;
 pub mod storage;
 pub mod tags;

@@ -1,7 +1,7 @@
 /** Routes that use a full-pane visual canvas when a detail id is open. */
-export const VISUAL_EDITOR_BASES = ['/diagrams', '/mindmaps'] as const;
+export const VISUAL_EDITOR_BASES = ['/diagrams', '/mindmaps', '/superpages'] as const;
 
-/** True for `/diagrams/:id` and `/mindmaps/:id` (not the empty list hint). */
+/** True for `/diagrams/:id`, `/mindmaps/:id`, and `/superpages/:id` (not the empty list hint). */
 export function isVisualEditorDetailRoute(pathname: string): boolean {
   for (const base of VISUAL_EDITOR_BASES) {
     if (pathname.startsWith(`${base}/`) && pathname.length > base.length + 1) return true;

@@ -81,3 +81,9 @@ Add a selection to the agent panel to choose the AI agent provider. (Claude code
 
 Put the agent page as a right hand pane on each of the pages (Files,Ideas, Documents, Web Pages, etc.)
 This way we will let the agent interact with the content in the current page.
+
+
+## Superpage
+
+What about combining documents, ideas, web pages, diagrams, mindmaps and other content into a superpage? This would allow the agent to interact with all of this content in one place.
+1 big page, where the user can place all the content they want to interact with.

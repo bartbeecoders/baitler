@@ -219,12 +219,15 @@ fn initialize_result(params: &Value) -> Value {
                          page (pages_create, Markdown or HTML) and share its URL with pages_publish; \
                          MODEL — arrange knowledge visually with mindmaps_create (a JSON graph or a \
                          Markdown outline; mindmaps_from_project seeds one from a project) and author \
-                         draw.io diagrams with diagrams_create. \
+                         draw.io diagrams with diagrams_create, and compose a working board with \
+                         superpages_create / superpages_from_project (ground agents via \
+                         superpages_context). \
                          Agent-authored ideas & \
-                         documents default to review=draft for human approval; set \
+                         documents default to review=draft for human approval (review_list); set \
                          review=published to skip the queue. Files/folders hold binary assets. \
-                         Send an X-Baitler-Agent header so your actions are attributed in \
-                         activity_list. Call tools/list for the full schema.",
+                         The portal Agent tab maps to cli_status / cli_runs_* (start runs via the UI \
+                         or call Baitler tools directly). Send an X-Baitler-Agent header so your \
+                         actions are attributed in activity_list. Call tools/list for the full schema.",
     })
 }
 

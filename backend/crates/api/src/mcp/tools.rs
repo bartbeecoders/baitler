@@ -26,7 +26,10 @@ use crate::files::model::{FileDto, FolderDto};
 use crate::files::repo as files_repo;
 use crate::ideas::model::{IdeaDto, IdeaSummary, REVIEWS, STATUSES};
 use crate::ideas::repo as ideas_repo;
-use crate::knowledge::model::{ProjectDto, PROJECT_STATUSES};
+use crate::cli::model::{CliRunDto, CliRunSummary};
+use crate::cli::repo as cli_repo;
+
+use crate::knowledge::model::{ProjectDto, ReviewQueue, PROJECT_STATUSES};
 use crate::knowledge::repo as kn;
 use crate::llm::{ChatMessage, ChatRequest};
 use crate::mindmap::model::{
@@ -36,6 +39,9 @@ use crate::mindmap::model::{
 use crate::mindmap::repo::{self as mindmap_repo, MindmapPatch};
 use crate::pages::model::{PageDto, PageSummary, SOURCE_FORMATS, VISIBILITIES};
 use crate::pages::repo::{self as pages_repo, PagePatch};
+use crate::superpage::context;
+use crate::superpage::model::{Layout, SuperpageDto, SuperpageSummary};
+use crate::superpage::repo as superpage_repo;
 use crate::state::AppState;
 
 use super::b64;
@@ -79,6 +85,13 @@ const MAX_DOC_BODY: usize = 5_000_000;
 /// Cap on bytes moved through a single read/write tool call (Base64 in JSON is
 /// memory-heavy; larger blobs should use the HTTP upload/download endpoints).
 const MAX_BLOB: usize = 24 * 1024 * 1024;
+/// Link/search endpoint types (mirrors [`crate::knowledge::model::ITEM_TYPES`]).
+const ITEM_TYPES_DESC: &str = "idea | document | file | project | page | mindmap | diagram";
+/// Project membership types (mirrors [`crate::knowledge::model::MEMBER_TYPES`]).
+const MEMBER_TYPES_DESC: &str = "idea | document | file | page | mindmap | diagram";
+const CLI_DEFAULT_LIMIT: usize = 50;
+const CLI_MAX_LIMIT: usize = 200;
+const ANTHROPIC_PROVIDER: &str = "anthropic";
 
 // ── Dispatch ────────────────────────────────────────────────────────────────
 
@@ -140,6 +153,14 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "diagrams_create" => diagrams_create(state, owner, args).await,
         "diagrams_update" => diagrams_update(state, owner, args).await,
         "diagrams_delete" => diagrams_delete(state, owner, args).await,
+        // Superpages (composed canvas)
+        "superpages_list" => superpages_list(state, owner, args).await,
+        "superpages_get" => superpages_get(state, owner, args).await,
+        "superpages_create" => superpages_create(state, owner, args).await,
+        "superpages_update" => superpages_update(state, owner, args).await,
+        "superpages_delete" => superpages_delete(state, owner, args).await,
+        "superpages_context" => superpages_context(state, owner, args).await,
+        "superpages_from_project" => superpages_from_project(state, owner, args).await,
         // Knowledge graph + search
         "knowledge_link" => knowledge_link(state, owner, args).await,
         "knowledge_unlink" => knowledge_unlink(state, owner, args).await,
@@ -151,6 +172,12 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "collection_export" => collection_export(state, owner, args).await,
         // Activity / provenance
         "activity_list" => activity_list(state, owner, args).await,
+        "review_list" => review_list(state, owner).await,
+        // Agent (Claude Code CLI)
+        "cli_status" => cli_status(state, owner).await,
+        "cli_runs_list" => cli_runs_list(state, owner, args).await,
+        "cli_runs_get" => cli_runs_get(state, owner, args).await,
+        "cli_run_cancel" => cli_run_cancel(state, owner, args).await,
         // AI
         "ai_providers" => ai_providers(state, owner).await,
         "ai_chat" => ai_chat(state, owner, args).await,
@@ -1638,6 +1665,144 @@ async fn diagrams_delete(state: &AppState, owner: &str, args: &Value) -> ToolRes
     }
 }
 
+// ── Superpages ────────────────────────────────────────────────────────────────
+
+fn parse_layout_arg(args: &Value) -> Result<Layout, ToolError> {
+    match args.get("blocks") {
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| invalid(e.to_string())),
+        None => Ok(Layout::default()),
+    }
+}
+
+async fn superpages_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+    let rows = superpage_repo::list_superpages(
+        &state.db,
+        owner,
+        opt_trimmed(args, "folder_id").as_deref(),
+        opt_trimmed(args, "project_id").as_deref(),
+        opt_trimmed(args, "tag").as_deref(),
+        opt_trimmed(args, "review").as_deref(),
+        opt_trimmed(args, "q").as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let summaries: Vec<SuperpageSummary> = rows.into_iter().map(SuperpageSummary::from_row).collect();
+    Ok(json!({ "superpages": summaries }))
+}
+
+async fn superpages_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let row = superpage_repo::get_superpage(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(SuperpageDto::from(row)))
+}
+
+async fn superpages_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let title = clean_title(&req_str(args, "title")?)?;
+    let layout = parse_layout_arg(args)?;
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => clean_tags(t)?,
+        None => Vec::new(),
+    };
+    let review = clean_review(args)?;
+    let row = superpage_repo::create_superpage(
+        &state.db,
+        owner,
+        &title,
+        &layout,
+        opt_trimmed(args, "folder_id").as_deref(),
+        opt_trimmed(args, "project_id").as_deref(),
+        &tags,
+        &review,
+    )
+    .await?;
+    Ok(json!(SuperpageDto::from(row)))
+}
+
+async fn superpages_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let title = match opt_trimmed(args, "title") {
+        Some(t) => Some(clean_title(&t)?),
+        None => None,
+    };
+    let layout = if args.get("blocks").is_some() {
+        Some(parse_layout_arg(args)?)
+    } else {
+        None
+    };
+    let review = opt_review(args)?;
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => Some(clean_tags(t)?),
+        None => None,
+    };
+    let updated = superpage_repo::update_superpage(
+        &state.db,
+        owner,
+        &id,
+        superpage_repo::SuperpagePatch {
+            title: title.as_deref(),
+            layout: layout.as_ref(),
+            review: review.as_deref(),
+            folder_id: None,
+            project_id: None,
+            tags: tags.as_deref(),
+        },
+    )
+    .await?
+    .ok_or_else(not_found)?;
+    Ok(json!(SuperpageDto::from(updated)))
+}
+
+async fn superpages_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    if superpage_repo::delete_superpage(&state.db, owner, &id).await? {
+        Ok(json!({ "deleted": true, "id": id }))
+    } else {
+        Err(not_found())
+    }
+}
+
+async fn superpages_context(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let row = superpage_repo::get_superpage(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    let layout: Layout = serde_json::from_str(&row.blocks).unwrap_or_default();
+    let ctx = context::resolve_context(&state.db, owner, &row.uuid, &row.title, &layout).await?;
+    Ok(json!(ctx))
+}
+
+async fn superpages_from_project(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let project_id = req_str(args, "project_id")?;
+    let project = kn::get_project(&state.db, owner, &project_id)
+        .await?
+        .ok_or_else(not_found)?;
+    let layout = superpage_repo::seed_from_project(&state.db, owner, &project_id).await?;
+    let title = match opt_trimmed(args, "title") {
+        Some(t) => clean_title(&t)?,
+        None => clean_title(&format!("{} — superpage", project.name))?,
+    };
+    let review = clean_review(args)?;
+    let row = superpage_repo::create_superpage(
+        &state.db,
+        owner,
+        &title,
+        &layout,
+        None,
+        Some(&project_id),
+        &[],
+        &review,
+    )
+    .await?;
+    Ok(json!(SuperpageDto::from(row)))
+}
+
 // ── Knowledge links & search ──────────────────────────────────────────────────
 
 async fn knowledge_link(state: &AppState, owner: &str, args: &Value) -> ToolResult {
@@ -1683,6 +1848,163 @@ async fn knowledge_search(state: &AppState, owner: &str, args: &Value) -> ToolRe
 async fn knowledge_tags(state: &AppState, owner: &str) -> ToolResult {
     let tags = kn::tag_counts(&state.db, owner).await?;
     Ok(json!({ "tags": tags }))
+}
+
+// ── Review queue ──────────────────────────────────────────────────────────────
+
+async fn review_list(state: &AppState, owner: &str) -> ToolResult {
+    let queue: ReviewQueue = kn::review_queue(&state.db, owner).await?;
+    Ok(json!(queue))
+}
+
+// ── Agent (Claude Code CLI) ───────────────────────────────────────────────────
+
+async fn cli_status(state: &AppState, owner: &str) -> ToolResult {
+    let cli = &state.config.cli;
+    let runner = state.cli_runner.as_ref();
+    let kind = runner.kind().to_string();
+    let is_mock = kind == "mock";
+    let has_stored_key = crate::ai::repo::get_ciphertext(&state.db, owner, ANTHROPIC_PROVIDER)
+        .await?
+        .is_some();
+    let host_key_env = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .is_some_and(|v| !v.trim().is_empty());
+    let minimax_configured = cli.minimax_api_key.is_some();
+
+    let (binary_ok, version, binary_detail) = if !cli.enabled {
+        (false, None, None)
+    } else if is_mock {
+        (true, None, None)
+    } else {
+        let h = runner.health().await;
+        (h.binary_ok, h.version, h.detail)
+    };
+
+    let (ready, message) = if !cli.enabled {
+        (
+            false,
+            "The agent runner is disabled. Set CLAUDE_CLI_ENABLED=true on the server.".to_string(),
+        )
+    } else if !binary_ok {
+        (
+            false,
+            format!(
+                "`claude` could not be run on the server ({}). Check CLAUDE_BIN and the server PATH.",
+                binary_detail.as_deref().unwrap_or("not found")
+            ),
+        )
+    } else if is_mock {
+        (true, "Using the offline mock runner (CLAUDE_BIN=mock).".to_string())
+    } else if has_stored_key {
+        (
+            true,
+            "Ready — Claude Code will use the Anthropic key from your AI settings.".to_string(),
+        )
+    } else if host_key_env {
+        (
+            true,
+            "Ready — Claude Code will use the server's ANTHROPIC_API_KEY.".to_string(),
+        )
+    } else {
+        (
+            true,
+            "claude is installed but no Anthropic key was detected — Claude Code relies on a \
+             `claude login` session on the server. (MiniMax uses MINIMAX_API_KEY instead.)"
+                .to_string(),
+        )
+    };
+
+    let claude_detail = if !cli.enabled {
+        "The agent runner is disabled."
+    } else if !binary_ok {
+        "claude is not runnable on the server."
+    } else if is_mock {
+        "Offline mock runner."
+    } else if has_stored_key || host_key_env {
+        "Anthropic (key configured)."
+    } else {
+        "Anthropic (uses a `claude login` session if present)."
+    };
+    let minimax_available = cli.enabled && binary_ok && (is_mock || minimax_configured);
+    let minimax_detail = if !cli.enabled {
+        "The agent runner is disabled.".to_string()
+    } else if !binary_ok {
+        "claude is not runnable on the server.".to_string()
+    } else if !is_mock && !minimax_configured {
+        "Not configured — set MINIMAX_API_KEY on the server.".to_string()
+    } else {
+        format!(
+            "MiniMax via its Anthropic-compatible endpoint ({}).",
+            cli.minimax_model
+        )
+    };
+
+    Ok(json!({
+        "enabled": cli.enabled,
+        "kind": kind,
+        "binary_ok": binary_ok,
+        "version": version,
+        "has_stored_key": has_stored_key,
+        "host_key_env": host_key_env,
+        "ready": ready,
+        "message": message,
+        "providers": [
+            {
+                "id": "claude_code",
+                "label": "Claude Code",
+                "available": cli.enabled && binary_ok,
+                "detail": claude_detail,
+            },
+            {
+                "id": "minimax",
+                "label": cli.minimax_model,
+                "available": minimax_available,
+                "detail": minimax_detail,
+            },
+        ],
+        "workspace_roots": cli.workspace_roots,
+    }))
+}
+
+async fn cli_runs_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(CLI_DEFAULT_LIMIT)
+        .clamp(1, CLI_MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+    let runs = cli_repo::list_runs(
+        &state.db,
+        owner,
+        opt_trimmed(args, "project_id").as_deref(),
+        opt_trimmed(args, "status").as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let summaries: Vec<CliRunSummary> = runs.into_iter().map(Into::into).collect();
+    Ok(json!({ "runs": summaries }))
+}
+
+async fn cli_runs_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let run = cli_repo::get_run(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(CliRunDto::from(run)))
+}
+
+async fn cli_run_cancel(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    cli_repo::get_run(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    if state.cli_runs.cancel(&id) {
+        Ok(json!({ "cancelled": true, "id": id }))
+    } else {
+        Err(ToolError::App(AppError::Conflict(
+            "run is not active".into(),
+        )))
+    }
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────
@@ -2121,19 +2443,19 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "projects_add_item",
-            "Add an idea/document/file to a project (sets its project membership).",
+            "Add an item to a project (sets its project membership).",
             json!({
                 "project_id": str_schema("project id"),
-                "item_type": str_schema("idea | document | file"),
+                "item_type": str_schema(MEMBER_TYPES_DESC),
                 "item_id": str_schema("the item's id"),
             }),
             &["project_id", "item_type", "item_id"],
         ),
         def(
             "projects_remove_item",
-            "Remove an idea/document/file from its project.",
+            "Remove an item from its project.",
             json!({
-                "item_type": str_schema("idea | document | file"),
+                "item_type": str_schema(MEMBER_TYPES_DESC),
                 "item_id": str_schema("the item's id"),
             }),
             &["item_type", "item_id"],
@@ -2341,14 +2663,85 @@ pub fn definitions() -> Vec<Value> {
             json!({ "id": str_schema("diagram id") }),
             &["id"],
         ),
+        // Superpages (composed canvas)
+        def(
+            "superpages_list",
+            "List superpages (composed boards of embeds, notes, and headings). Optional filters.",
+            json!({
+                "folder_id": str_schema("only superpages in this folder"),
+                "project_id": str_schema("only superpages in this project"),
+                "tag": str_schema("only superpages carrying this tag"),
+                "q": str_schema("search title and block text"),
+                "limit": int_schema("max results (default 100, max 500)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "superpages_get",
+            "Fetch a superpage by id (layout JSON with block references).",
+            json!({ "id": str_schema("superpage id") }),
+            &["id"],
+        ),
+        def(
+            "superpages_create",
+            "Create a superpage from a blocks layout. Agent writes default to review=draft.",
+            json!({
+                "title": str_schema("superpage title (required)"),
+                "blocks": json!({
+                    "type": "object",
+                    "description": "{ layout: grid, blocks: [{ id, kind: embed|note|heading, … }] }",
+                }),
+                "review": str_schema("draft | published (default draft)"),
+                "folder_id": str_schema("folder id (optional)"),
+                "project_id": str_schema("project id (optional)"),
+                "tags": json!({ "type": "array", "items": { "type": "string" } }),
+            }),
+            &["title"],
+        ),
+        def(
+            "superpages_update",
+            "Update a superpage (only provided fields change). Pass review=published to approve.",
+            json!({
+                "id": str_schema("superpage id (required)"),
+                "title": str_schema("new title"),
+                "blocks": json!({ "type": "object", "description": "replacement layout" }),
+                "review": str_schema("draft | published"),
+                "tags": json!({ "type": "array", "items": { "type": "string" } }),
+            }),
+            &["id"],
+        ),
+        def(
+            "superpages_delete",
+            "Delete a superpage by id.",
+            json!({ "id": str_schema("superpage id") }),
+            &["id"],
+        ),
+        def(
+            "superpages_context",
+            "Return a superpage layout with resolved embed payloads (titles, bodies, previews) \
+             for agent grounding in one call.",
+            json!({ "id": str_schema("superpage id") }),
+            &["id"],
+        ),
+        def(
+            "superpages_from_project",
+            "Create a superpage whose embed blocks reference every member of a project.",
+            json!({
+                "project_id": str_schema("project id (required)"),
+                "title": str_schema("title for the new superpage (optional)"),
+                "review": str_schema("draft | published (default draft)"),
+            }),
+            &["project_id"],
+        ),
         // Knowledge graph + search
         def(
             "knowledge_link",
-            "Create a symmetric cross-type link between two items (idea|document|file|project).",
+            "Create a symmetric cross-type link between two knowledge items.",
             json!({
-                "src_type": str_schema("idea | document | file | project"),
+                "src_type": str_schema(ITEM_TYPES_DESC),
                 "src_id": str_schema("source item id"),
-                "dst_type": str_schema("idea | document | file | project"),
+                "dst_type": str_schema(ITEM_TYPES_DESC),
                 "dst_id": str_schema("target item id"),
                 "relation": str_schema("optional label, e.g. contains | implements | references"),
             }),
@@ -2358,9 +2751,9 @@ pub fn definitions() -> Vec<Value> {
             "knowledge_unlink",
             "Remove the cross-type link between two items.",
             json!({
-                "src_type": str_schema("idea | document | file | project"),
+                "src_type": str_schema(ITEM_TYPES_DESC),
                 "src_id": str_schema("source item id"),
-                "dst_type": str_schema("idea | document | file | project"),
+                "dst_type": str_schema(ITEM_TYPES_DESC),
                 "dst_id": str_schema("target item id"),
             }),
             &["src_type", "src_id", "dst_type", "dst_id"],
@@ -2369,16 +2762,16 @@ pub fn definitions() -> Vec<Value> {
             "knowledge_backlinks",
             "List everything linked to an item, as typed references with titles.",
             json!({
-                "item_type": str_schema("idea | document | file | project"),
+                "item_type": str_schema(ITEM_TYPES_DESC),
                 "item_id": str_schema("the item's id"),
             }),
             &["item_type", "item_id"],
         ),
         def(
             "knowledge_search",
-            "Full-text search across ideas, documents, projects, files, and pages. Returns typed, \
-             ranked sections with highlighted snippets — the agent's entry point for \
-             answering questions from the knowledge base.",
+            "Full-text search across ideas, documents, projects, files, pages, mindmaps, \
+             diagrams, and superpages. Returns typed, ranked sections with highlighted snippets — \
+             the agent's entry point for answering questions from the knowledge base.",
             json!({
                 "q": str_schema("the search query"),
                 "limit": int_schema("max hits per type (default 100, max 500)"),
@@ -2425,6 +2818,43 @@ pub fn definitions() -> Vec<Value> {
                 "limit": int_schema("max results (default 100, max 500)"),
             }),
             &[],
+        ),
+        def(
+            "review_list",
+            "List ideas and documents pending human approval (review=draft) — the portal Review tab.",
+            json!({}),
+            &[],
+        ),
+        // Agent (Claude Code CLI)
+        def(
+            "cli_status",
+            "Agent runner readiness: whether Claude Code is enabled, the binary probe, API keys, \
+             and per-provider availability (same signal as the portal Agent page).",
+            json!({}),
+            &[],
+        ),
+        def(
+            "cli_runs_list",
+            "List past Agent (Claude Code CLI) runs, newest first.",
+            json!({
+                "project_id": str_schema("only runs scoped to this project"),
+                "status": str_schema("running | succeeded | failed | cancelled"),
+                "limit": int_schema("max results (default 50, max 200)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "cli_runs_get",
+            "Fetch a single Agent run by id (includes result_text when finished).",
+            json!({ "id": str_schema("run id") }),
+            &["id"],
+        ),
+        def(
+            "cli_run_cancel",
+            "Cancel an in-flight Agent run.",
+            json!({ "id": str_schema("run id") }),
+            &["id"],
         ),
         // Conversion / export
         def(
@@ -2504,6 +2934,13 @@ mod tests {
             "diagrams_create",
             "diagrams_update",
             "diagrams_delete",
+            "superpages_list",
+            "superpages_get",
+            "superpages_create",
+            "superpages_update",
+            "superpages_delete",
+            "superpages_context",
+            "superpages_from_project",
             "knowledge_link",
             "knowledge_unlink",
             "knowledge_backlinks",
@@ -2512,6 +2949,11 @@ mod tests {
             "documents_publish",
             "collection_export",
             "activity_list",
+            "review_list",
+            "cli_status",
+            "cli_runs_list",
+            "cli_runs_get",
+            "cli_run_cancel",
             "ai_providers",
             "ai_chat",
             "export",
