@@ -215,7 +215,12 @@ fn initialize_result(params: &Value) -> Value {
                          RETRIEVE — answer questions by knowledge_search across the base, then \
                          ground a reply with ai_chat; EXPORT — turn documents into pdf/docx/\
                          markdown/html via documents_export/export, or save a rendered artifact as \
-                         a file with documents_publish / collection_export. Agent-authored ideas & \
+                         a file with documents_publish / collection_export; PUBLISH — author a web \
+                         page (pages_create, Markdown or HTML) and share its URL with pages_publish; \
+                         MODEL — arrange knowledge visually with mindmaps_create (a JSON graph or a \
+                         Markdown outline; mindmaps_from_project seeds one from a project) and author \
+                         draw.io diagrams with diagrams_create. \
+                         Agent-authored ideas & \
                          documents default to review=draft for human approval; set \
                          review=published to skip the queue. Files/folders hold binary assets. \
                          Send an X-Baitler-Agent header so your actions are attributed in \

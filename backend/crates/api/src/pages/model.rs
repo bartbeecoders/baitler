@@ -32,6 +32,7 @@ pub struct PageRow {
     pub project_id: Option<String>,
     pub version: i64,
     pub published_at: Option<String>,
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -49,6 +50,7 @@ pub struct PageDto {
     pub project_id: Option<String>,
     pub version: i64,
     pub published_at: Option<String>,
+    pub tags: Vec<String>,
     /// Origin-relative public URL (`/p/{slug}`), empty while `draft`.
     pub public_url: String,
     pub created_at: String,
@@ -92,6 +94,7 @@ impl From<PageRow> for PageDto {
             project_id: r.project_id,
             version: r.version,
             published_at: r.published_at,
+            tags: r.tags,
             public_url,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -111,6 +114,7 @@ pub struct PageSummary {
     pub project_id: Option<String>,
     pub version: i64,
     pub published_at: Option<String>,
+    pub tags: Vec<String>,
     pub public_url: String,
     pub updated_at: String,
 }
@@ -128,6 +132,7 @@ impl From<PageRow> for PageSummary {
             project_id: r.project_id,
             version: r.version,
             published_at: r.published_at,
+            tags: r.tags,
             public_url,
             updated_at: r.updated_at,
         }

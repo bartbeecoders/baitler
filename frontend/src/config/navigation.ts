@@ -5,7 +5,11 @@ import {
   BarChart3,
   FileText,
   FolderKanban,
+  Globe,
+  Network,
+  PenTool,
   Sparkles,
+  Bot,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -58,6 +62,27 @@ export const navItems: NavItem[] = [
     phase: 11,
   },
   {
+    label: 'Pages',
+    path: '/pages',
+    icon: Globe,
+    description: 'Author web pages and publish them to a shareable URL.',
+    phase: 12,
+  },
+  {
+    label: 'Mindmaps',
+    path: '/mindmaps',
+    icon: Network,
+    description: 'Map ideas visually; seed a mindmap from a project.',
+    phase: 14,
+  },
+  {
+    label: 'Diagrams',
+    path: '/diagrams',
+    icon: PenTool,
+    description: 'Author draw.io diagrams stored as portable XML.',
+    phase: 14,
+  },
+  {
     label: 'Analytics',
     path: '/analytics',
     icon: BarChart3,
@@ -70,6 +95,13 @@ export const navItems: NavItem[] = [
     icon: Sparkles,
     description: 'Analyze and chat with your data across providers.',
     phase: 6,
+  },
+  {
+    label: 'Agent',
+    path: '/agent',
+    icon: Bot,
+    description: 'Run Claude Code on your Baitler data from the portal.',
+    phase: 13,
   },
 ];
 

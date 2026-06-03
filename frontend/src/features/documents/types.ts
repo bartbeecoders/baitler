@@ -4,6 +4,7 @@ export interface DocumentSummary {
   id: string;
   title: string;
   version: number;
+  tags: string[];
   updated_at: string;
 }
 
@@ -12,6 +13,7 @@ export interface Document {
   title: string;
   body: string;
   version: number;
+  tags: string[];
   created_at: string;
   updated_at: string;
 }

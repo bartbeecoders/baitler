@@ -116,3 +116,9 @@
     }
   }
 }
+
+/* Object editors: mindmap (React Flow) and diagram (draw.io) fill the canvas host. */
+[data-testid='mindmap-canvas'] .react-flow {
+  width: 100%;
+  height: 100%;
+}

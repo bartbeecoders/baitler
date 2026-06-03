@@ -8,7 +8,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::AppState;
 use reqwest::header::{
     ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
@@ -45,6 +45,7 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        cli: CliConfig::default(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }

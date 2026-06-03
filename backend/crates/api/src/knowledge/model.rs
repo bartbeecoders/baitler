@@ -3,9 +3,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Item types that can be a project member or a link endpoint.
-pub const ITEM_TYPES: &[&str] = &["idea", "document", "file", "project", "page"];
+pub const ITEM_TYPES: &[&str] = &[
+    "idea", "document", "file", "project", "page", "mindmap", "diagram",
+];
 /// Types that can belong to a project (everything except project itself).
-pub const MEMBER_TYPES: &[&str] = &["idea", "document", "file", "page"];
+pub const MEMBER_TYPES: &[&str] = &["idea", "document", "file", "page", "mindmap", "diagram"];
 /// Project lifecycle states.
 pub const PROJECT_STATUSES: &[&str] = &["active", "archived"];
 
@@ -55,6 +57,8 @@ pub struct MemberCounts {
     pub documents: usize,
     pub files: usize,
     pub pages: usize,
+    pub mindmaps: usize,
+    pub diagrams: usize,
     /// Members still in `review = "draft"` (ideas + documents), i.e. pending approval.
     pub drafts: usize,
 }
@@ -98,6 +102,8 @@ pub struct ProjectMembers {
     pub documents: Vec<MemberItem>,
     pub files: Vec<MemberItem>,
     pub pages: Vec<MemberItem>,
+    pub mindmaps: Vec<MemberItem>,
+    pub diagrams: Vec<MemberItem>,
 }
 
 /// Pending-approval ideas + documents (review = draft) for the portal queue.
@@ -128,4 +134,15 @@ pub struct SearchResults {
     pub documents: Vec<SearchHit>,
     pub projects: Vec<SearchHit>,
     pub files: Vec<SearchHit>,
+    pub pages: Vec<SearchHit>,
+    pub mindmaps: Vec<SearchHit>,
+    pub diagrams: Vec<SearchHit>,
+}
+
+/// One entry in the cross-type tag taxonomy (Phase 14): a tag and how many
+/// idea/document/page items carry it.
+#[derive(Debug, Serialize)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: usize,
 }

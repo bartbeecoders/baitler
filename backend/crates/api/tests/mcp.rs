@@ -8,7 +8,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::AppState;
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
@@ -35,6 +35,7 @@ fn test_config(mcp: McpConfig) -> Config {
             max_upload_bytes: 16 * 1024 * 1024,
         },
         mcp,
+        cli: CliConfig::default(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }
@@ -574,6 +575,145 @@ async fn agentic_loop_end_to_end() {
     );
 }
 
+/// Phase 12 Milestone C: an agent authors a web page under a project over MCP,
+/// it is findable by knowledge_search, publishing returns a shareable URL that
+/// `GET /p/{slug}` serves, the publish is attributed in the activity log, and
+/// unpublishing 404s the URL. Fully offline; no egress.
+#[tokio::test]
+async fn pages_mcp_authoring_publish_and_serve() {
+    let base = spawn_app(enabled()).await;
+    let client = Client::new();
+    let agent = "page-author";
+
+    // tools/list advertises the full pages surface.
+    let (_s, listed) = rpc(
+        &client,
+        &base,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+    )
+    .await;
+    let names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    for expected in [
+        "pages_list",
+        "pages_get",
+        "pages_create",
+        "pages_update",
+        "pages_delete",
+        "pages_publish",
+        "pages_unpublish",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing tool {expected}"
+        );
+    }
+
+    let project = tool_call(
+        &client,
+        &base,
+        agent,
+        "projects_create",
+        json!({ "name": "Site" }),
+    )
+    .await;
+    let pid = project["id"].as_str().unwrap().to_string();
+
+    // Author from Markdown; visibility defaults to draft (never self-published).
+    let page = tool_call(
+        &client,
+        &base,
+        agent,
+        "pages_create",
+        json!({ "title": "Launch Notes", "body": "# Launch\n\nwe shipped", "source_format": "markdown", "project_id": pid }),
+    )
+    .await;
+    assert_eq!(page["visibility"], "draft", "agent page defaults to draft");
+    assert_eq!(page["public_url"], "", "a draft has no public url");
+    assert!(
+        page["body"].as_str().unwrap().contains("<h1>"),
+        "markdown rendered to HTML"
+    );
+    assert_eq!(page["project_id"], pid);
+    let page_id = page["id"].as_str().unwrap().to_string();
+
+    // It's a project member and findable by knowledge_search (the page FT section).
+    let detail = tool_call(&client, &base, agent, "projects_get", json!({ "id": pid })).await;
+    assert_eq!(detail["counts"]["pages"], 1);
+    let search = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_search",
+        json!({ "q": "launch" }),
+    )
+    .await;
+    assert!(
+        !search["pages"].as_array().unwrap().is_empty(),
+        "page matches 'launch' in knowledge_search"
+    );
+
+    // Publish → a non-empty shareable URL (id + title for provenance).
+    let published = tool_call(
+        &client,
+        &base,
+        agent,
+        "pages_publish",
+        json!({ "id": page_id }),
+    )
+    .await;
+    assert_eq!(published["published"], true);
+    assert_eq!(published["visibility"], "public");
+    assert_eq!(published["id"], page_id);
+    assert_eq!(published["title"], "Launch Notes");
+    let url = published["url"].as_str().unwrap().to_string();
+    assert!(!url.is_empty(), "publish returns a shareable url");
+    assert!(url.starts_with("/p/"));
+
+    // The URL serves the published page.
+    let served = client.get(format!("{base}{url}")).send().await.unwrap();
+    assert_eq!(served.status(), StatusCode::OK);
+    assert!(served.text().await.unwrap().contains("we shipped"));
+
+    // Provenance: page.create + page.publish attributed to the agent, with id+title.
+    let activity = tool_call(
+        &client,
+        &base,
+        agent,
+        "activity_list",
+        json!({ "agent": agent }),
+    )
+    .await;
+    let rows = activity["activity"].as_array().unwrap();
+    let publish_row = rows
+        .iter()
+        .find(|r| r["action"] == "page.publish")
+        .expect("page.publish logged");
+    assert_eq!(publish_row["agent"], agent);
+    assert_eq!(
+        publish_row["target_id"], page_id,
+        "publish row carries the page id"
+    );
+    assert_eq!(publish_row["target_title"], "Launch Notes");
+    assert!(rows.iter().any(|r| r["action"] == "page.create"));
+
+    // Unpublish → the URL immediately 404s.
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "pages_unpublish",
+        json!({ "id": page_id }),
+    )
+    .await;
+    let after = client.get(format!("{base}{url}")).send().await.unwrap();
+    assert_eq!(after.status(), StatusCode::NOT_FOUND);
+}
+
 /// Publishing: render a document and a whole project to stored files, and flip
 /// the document's review state. Uses markdown (no Chrome/Pandoc needed → CI-safe).
 #[tokio::test]
@@ -663,4 +803,246 @@ async fn publishing_persists_artifacts_and_marks_published() {
         .collect();
     assert!(actions.contains(&"document.publish"));
     assert!(actions.contains(&"project.export"));
+}
+
+#[tokio::test]
+async fn files_import_reads_local_files_server_side() {
+    // A temp dir (the allow-listed root) with two files.
+    let root = std::env::temp_dir().join("baitler-mcp-import-test");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.png"), b"\x89PNG not-a-real-image").unwrap();
+    std::fs::write(root.join("b.txt"), b"hello world").unwrap();
+
+    let mut cfg = test_config(enabled());
+    cfg.cli.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    let state = baitler_api::build_state(cfg).await.expect("state");
+    let app = baitler_api::build_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let client = Client::new();
+
+    // Import the whole directory — the server reads the bytes itself.
+    let res = tool_call(
+        &client,
+        &base,
+        "claude-code",
+        "files_import",
+        json!({ "path": root.to_string_lossy() }),
+    )
+    .await;
+    assert_eq!(res["count"], 2, "imported both files: {res}");
+    let names: Vec<&str> = res["imported"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    assert!(names.contains(&"a.png"));
+    assert!(names.contains(&"b.txt"));
+
+    // They now live in Baitler Files (at the root).
+    let list = tool_call(&client, &base, "claude-code", "files_list", json!({})).await;
+    assert_eq!(list["files"].as_array().unwrap().len(), 2);
+
+    // A path OUTSIDE the allow-listed root is refused.
+    let resp = client
+        .post(format!("{base}/mcp"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "files_import", "arguments": { "path": std::env::temp_dir().to_string_lossy() } }
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["result"]["isError"], true,
+        "out-of-root import must fail"
+    );
+}
+
+/// Phase 14, Milestone B/C: the agentic mindmap + diagram surface. An agent
+/// lists the new tools, seeds a mindmap from a project (ideas → nodes), authors
+/// a draft diagram, cross-links the two, and confirms a `page.publish`-style
+/// activity attribution + a `kn_link` scrub on delete. Fully offline.
+#[tokio::test]
+async fn mindmaps_and_diagrams_mcp_surface() {
+    let base = spawn_app(enabled()).await;
+    let client = Client::new();
+    let agent = "modeler";
+
+    // tools/list advertises the new tools.
+    let (_s, listed) = rpc(
+        &client,
+        &base,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+    )
+    .await;
+    let names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    for expected in [
+        "mindmaps_list",
+        "mindmaps_get",
+        "mindmaps_create",
+        "mindmaps_update",
+        "mindmaps_delete",
+        "mindmaps_from_project",
+        "diagrams_list",
+        "diagrams_get",
+        "diagrams_create",
+        "diagrams_update",
+        "diagrams_delete",
+    ] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing tool {expected}"
+        );
+    }
+
+    // A project with two ideas as members.
+    let project = tool_call(
+        &client,
+        &base,
+        agent,
+        "projects_create",
+        json!({ "name": "Atlas" }),
+    )
+    .await;
+    let pid = project["id"].as_str().unwrap().to_string();
+    let mut idea_ids = Vec::new();
+    for t in ["North", "South"] {
+        let idea = tool_call(
+            &client,
+            &base,
+            agent,
+            "ideas_create",
+            json!({ "title": t, "review": "published", "project_id": pid }),
+        )
+        .await;
+        idea_ids.push(idea["id"].as_str().unwrap().to_string());
+    }
+
+    // Seed a mindmap from the project: root + 2 ideas.
+    let mm = tool_call(
+        &client,
+        &base,
+        agent,
+        "mindmaps_from_project",
+        json!({ "project_id": pid }),
+    )
+    .await;
+    let mm_id = mm["id"].as_str().unwrap().to_string();
+    assert_eq!(mm["review"], "draft", "agent mindmap defaults to draft");
+    assert_eq!(mm["graph"]["nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(mm["project_id"], pid);
+
+    // Author a draft diagram with extractable labels.
+    let diagram = tool_call(
+        &client,
+        &base,
+        agent,
+        "diagrams_create",
+        json!({
+            "title": "Topology",
+            "xml": "<mxGraphModel><root><mxCell id=\"2\" value=\"Gateway\" vertex=\"1\"/></root></mxGraphModel>",
+            "project_id": pid
+        }),
+    )
+    .await;
+    let diagram_id = diagram["id"].as_str().unwrap().to_string();
+    assert_eq!(diagram["review"], "draft");
+
+    // Cross-link the mindmap and the diagram (proves both are valid item types).
+    let linked = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_link",
+        json!({ "src_type": "mindmap", "src_id": mm_id, "dst_type": "diagram", "dst_id": diagram_id, "relation": "depicts" }),
+    )
+    .await;
+    assert_eq!(linked["linked"], true);
+
+    // knowledge_search surfaces both the mindmap (by node label) and the diagram (by XML label).
+    let search = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_search",
+        json!({ "q": "North" }),
+    )
+    .await;
+    assert!(search["mindmaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["id"] == mm_id));
+    let search = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_search",
+        json!({ "q": "Gateway" }),
+    )
+    .await;
+    assert!(search["diagrams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|h| h["id"] == diagram_id));
+
+    // Activity recorded the creates, attributed to the agent.
+    let activity = tool_call(
+        &client,
+        &base,
+        agent,
+        "activity_list",
+        json!({ "agent": agent }),
+    )
+    .await;
+    let actions: Vec<&str> = activity["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["action"].as_str().unwrap())
+        .collect();
+    assert!(
+        actions.contains(&"mindmap.create"),
+        "missing mindmap.create: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"diagram.create"),
+        "missing diagram.create: {actions:?}"
+    );
+
+    // Deleting the mindmap scrubs the cross-type link (the diagram's backlinks drop it).
+    let del = tool_call(
+        &client,
+        &base,
+        agent,
+        "mindmaps_delete",
+        json!({ "id": mm_id }),
+    )
+    .await;
+    assert_eq!(del["deleted"], true);
+    let backlinks = tool_call(
+        &client,
+        &base,
+        agent,
+        "knowledge_backlinks",
+        json!({ "item_type": "diagram", "item_id": diagram_id }),
+    )
+    .await;
+    assert!(
+        backlinks["links"].as_array().unwrap().is_empty(),
+        "link should be scrubbed when the mindmap is deleted: {backlinks}"
+    );
 }

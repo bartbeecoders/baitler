@@ -8,13 +8,14 @@ use crate::error::{AppError, AppResult};
 
 use super::model::DocumentRow;
 
-const DOC_SELECT: &str = "SELECT uuid, owner, title, body, version, review, project_id, \
+const DOC_SELECT: &str = "SELECT uuid, owner, title, body, version, review, project_id, tags, \
     type::string(created_at) AS created_at, type::string(updated_at) AS updated_at FROM document";
 
 fn vanished() -> AppError {
     AppError::Internal("document not found immediately after write".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_document(
     db: &Db,
     owner: &str,
@@ -22,11 +23,12 @@ pub async fn create_document(
     body: &str,
     review: &str,
     project_id: Option<&str>,
+    tags: &[String],
 ) -> AppResult<DocumentRow> {
     let uuid = Uuid::new_v4().to_string();
     let sql = format!(
         "CREATE document CONTENT {{ uuid: $uuid, owner: $owner, title: $title, body: $body, \
-         review: $review, project_id: $project_id }}; \
+         review: $review, project_id: $project_id, tags: $tags }}; \
          {DOC_SELECT} WHERE owner = $owner AND uuid = $uuid"
     );
     let mut res = db
@@ -37,6 +39,7 @@ pub async fn create_document(
         .bind(("body", body.to_string()))
         .bind(("review", review.to_string()))
         .bind(("project_id", project_id.map(str::to_string)))
+        .bind(("tags", tags.to_vec()))
         .await?
         .check()?;
     let rows: Vec<DocumentRow> = res.take(1)?;
@@ -55,10 +58,31 @@ pub async fn get_document(db: &Db, owner: &str, uuid: &str) -> AppResult<Option<
     Ok(rows.into_iter().next())
 }
 
-pub async fn list_documents(db: &Db, owner: &str) -> AppResult<Vec<DocumentRow>> {
-    let sql = format!("{DOC_SELECT} WHERE owner = $owner ORDER BY updated_at DESC");
+pub async fn list_documents(
+    db: &Db,
+    owner: &str,
+    tag: Option<&str>,
+) -> AppResult<Vec<DocumentRow>> {
+    let mut clauses = vec!["owner = $owner".to_string()];
+    if tag.is_some() {
+        clauses.push("$tag IN tags".to_string());
+    }
+    let sql = format!(
+        "{DOC_SELECT} WHERE {} ORDER BY updated_at DESC",
+        clauses.join(" AND ")
+    );
+    let mut query = db.query(sql).bind(("owner", owner.to_string()));
+    if let Some(t) = tag {
+        query = query.bind(("tag", t.to_string()));
+    }
+    let mut res = query.await?.check()?;
+    Ok(res.take(0)?)
+}
+
+/// Distinct tags used across this owner's documents.
+pub async fn distinct_tags(db: &Db, owner: &str) -> AppResult<Vec<Vec<String>>> {
     let mut res = db
-        .query(sql)
+        .query("SELECT VALUE tags FROM document WHERE owner = $owner")
         .bind(("owner", owner.to_string()))
         .await?
         .check()?;
@@ -72,6 +96,7 @@ pub async fn update_document(
     title: Option<&str>,
     body: Option<&str>,
     review: Option<&str>,
+    tags: Option<&[String]>,
 ) -> AppResult<Option<DocumentRow>> {
     let mut sets: Vec<&str> = Vec::new();
     if title.is_some() {
@@ -82,6 +107,9 @@ pub async fn update_document(
     }
     if review.is_some() {
         sets.push("review = $review");
+    }
+    if tags.is_some() {
+        sets.push("tags = $tags");
     }
     if sets.is_empty() {
         return get_document(db, owner, uuid).await;
@@ -109,6 +137,9 @@ pub async fn update_document(
     }
     if let Some(r) = review {
         query = query.bind(("review", r.to_string()));
+    }
+    if let Some(t) = tags {
+        query = query.bind(("tags", t.to_vec()));
     }
     let mut res = query.await?.check()?;
     let rows: Vec<DocumentRow> = res.take(1)?;

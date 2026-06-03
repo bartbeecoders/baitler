@@ -58,6 +58,7 @@ struct ListParams {
     folder: Option<String>,
     visibility: Option<String>,
     project: Option<String>,
+    tag: Option<String>,
     q: Option<String>,
     /// Accepted for forward-compat; a no-op pre-auth (one owner). See Phase 12.D.
     #[allow(dead_code)]
@@ -73,6 +74,7 @@ async fn list(
 ) -> AppResult<Json<PageListResponse>> {
     let folder = nz(&p.folder);
     let project = nz(&p.project);
+    let tag = nz(&p.tag);
     let q = nz(&p.q);
     let visibility = match nz(&p.visibility) {
         Some(v) => Some(clean_visibility(&v)?),
@@ -87,6 +89,7 @@ async fn list(
         folder.as_deref(),
         visibility.as_deref(),
         project.as_deref(),
+        tag.as_deref(),
         q.as_deref(),
         limit,
         offset,
@@ -113,6 +116,8 @@ struct CreatePageBody {
     folder_id: Option<String>,
     #[serde(default)]
     project_id: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
     /// Promote an existing document into a new page (copies its sanitized HTML).
     #[serde(default)]
     from_document: Option<String>,
@@ -153,6 +158,7 @@ async fn create(
 
     let folder_id = validate_folder(db, &owner, body.folder_id.as_deref()).await?;
     let project_id = validate_project(db, &owner, body.project_id.as_deref()).await?;
+    let tags = crate::tags::normalize_tags(body.tags.unwrap_or_default())?;
 
     let page = repo::create_page(
         db,
@@ -163,6 +169,7 @@ async fn create(
         &visibility,
         folder_id.as_deref(),
         project_id.as_deref(),
+        &tags,
     )
     .await?;
     Ok((StatusCode::CREATED, Json(dto(&state, page))))
@@ -195,6 +202,8 @@ struct UpdatePageBody {
     folder_id: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     project_id: Option<Option<String>>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
 }
 
 async fn update(
@@ -238,6 +247,11 @@ async fn update(
             .ok_or_else(|| AppError::BadRequest("target project does not exist".into()))?;
     }
 
+    let tags = match body.tags {
+        Some(t) => Some(crate::tags::normalize_tags(t)?),
+        None => None,
+    };
+
     let patch = PagePatch {
         title: title.as_deref(),
         body: body.body.as_deref(),
@@ -246,6 +260,7 @@ async fn update(
         visibility: visibility.as_deref(),
         folder_id: body.folder_id.as_ref().map(|o| o.as_deref()),
         project_id: body.project_id.as_ref().map(|o| o.as_deref()),
+        tags: tags.as_deref(),
     };
     let updated = repo::update_page(db, &owner, &id, patch)
         .await?

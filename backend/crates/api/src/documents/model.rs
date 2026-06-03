@@ -13,6 +13,8 @@ pub struct DocumentRow {
     pub review: String,
     /// Project this document belongs to, if any (Phase 11 membership pointer).
     pub project_id: Option<String>,
+    /// Free-form tags (Phase 14).
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -25,6 +27,7 @@ pub struct DocumentDto {
     pub version: i64,
     pub review: String,
     pub project_id: Option<String>,
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -38,6 +41,7 @@ impl From<DocumentRow> for DocumentDto {
             version: r.version,
             review: r.review,
             project_id: r.project_id,
+            tags: r.tags,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -52,6 +56,7 @@ pub struct DocumentSummary {
     pub version: i64,
     pub review: String,
     pub project_id: Option<String>,
+    pub tags: Vec<String>,
     pub updated_at: String,
 }
 
@@ -63,6 +68,7 @@ impl From<DocumentRow> for DocumentSummary {
             version: r.version,
             review: r.review,
             project_id: r.project_id,
+            tags: r.tags,
             updated_at: r.updated_at,
         }
     }
@@ -73,6 +79,8 @@ pub struct CreateDocumentBody {
     pub title: String,
     #[serde(default)]
     pub body: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -84,6 +92,8 @@ pub struct UpdateDocumentBody {
     /// draft|published — lets the portal approve/publish a draft.
     #[serde(default)]
     pub review: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 /// `POST /export` — the shared conversion pathway, usable by any feature.

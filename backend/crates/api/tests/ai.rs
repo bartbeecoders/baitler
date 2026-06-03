@@ -4,7 +4,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::{ai::repo, AppState};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -34,6 +34,7 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        cli: CliConfig::default(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }

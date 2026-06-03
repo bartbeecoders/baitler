@@ -13,7 +13,7 @@ use crate::slug;
 use super::model::PageRow;
 
 const PAGE_SELECT: &str = "SELECT uuid, owner, title, body, slug, visibility, source_format, \
-    folder_id, project_id, version, \
+    folder_id, project_id, version, tags, \
     IF published_at = NONE THEN NONE ELSE type::string(published_at) END AS published_at, \
     type::string(created_at) AS created_at, type::string(updated_at) AS updated_at FROM page";
 
@@ -42,6 +42,7 @@ pub async fn create_page(
     visibility: &str,
     folder_id: Option<&str>,
     project_id: Option<&str>,
+    tags: &[String],
 ) -> AppResult<PageRow> {
     let uuid = Uuid::new_v4().to_string();
     // Unlisted pages get unguessable slug entropy (the slug IS the access token).
@@ -62,7 +63,8 @@ pub async fn create_page(
     let sql = format!(
         "CREATE page CONTENT {{ uuid: $uuid, owner: $owner, title: $title, body: $body, \
          slug: $slug, visibility: $visibility, source_format: $source_format, \
-         folder_id: $folder_id, project_id: $project_id, published_at: {published_expr} }}; \
+         folder_id: $folder_id, project_id: $project_id, tags: $tags, \
+         published_at: {published_expr} }}; \
          {PAGE_SELECT} WHERE owner = $owner AND uuid = $uuid"
     );
     let mut res = db
@@ -76,6 +78,7 @@ pub async fn create_page(
         .bind(("source_format", source_format.to_string()))
         .bind(("folder_id", folder_id.map(str::to_string)))
         .bind(("project_id", project_id.map(str::to_string)))
+        .bind(("tags", tags.to_vec()))
         .await?
         .check()?;
     let rows: Vec<PageRow> = res.take(1)?;
@@ -128,6 +131,7 @@ pub async fn list_pages(
     folder: Option<&str>,
     visibility: Option<&str>,
     project: Option<&str>,
+    tag: Option<&str>,
     q: Option<&str>,
     limit: usize,
     offset: usize,
@@ -141,6 +145,9 @@ pub async fn list_pages(
     }
     if project.is_some() {
         clauses.push("project_id = $project".to_string());
+    }
+    if tag.is_some() {
+        clauses.push("$tag IN tags".to_string());
     }
     if q.is_some() {
         clauses.push(
@@ -167,10 +174,23 @@ pub async fn list_pages(
     if let Some(p) = project {
         query = query.bind(("project", p.to_string()));
     }
+    if let Some(t) = tag {
+        query = query.bind(("tag", t.to_string()));
+    }
     if let Some(s) = q {
         query = query.bind(("q", s.to_string()));
     }
     let mut res = query.await?.check()?;
+    Ok(res.take(0)?)
+}
+
+/// Distinct tags used across this owner's pages.
+pub async fn distinct_tags(db: &Db, owner: &str) -> AppResult<Vec<Vec<String>>> {
+    let mut res = db
+        .query("SELECT VALUE tags FROM page WHERE owner = $owner")
+        .bind(("owner", owner.to_string()))
+        .await?
+        .check()?;
     Ok(res.take(0)?)
 }
 
@@ -186,6 +206,7 @@ pub struct PagePatch<'a> {
     pub visibility: Option<&'a str>,
     pub folder_id: Option<Option<&'a str>>,
     pub project_id: Option<Option<&'a str>>,
+    pub tags: Option<&'a [String]>,
 }
 
 pub async fn update_page(
@@ -235,7 +256,10 @@ pub async fn update_page(
         Some(None) => sets.push("project_id = NONE"),
         None => {}
     }
-    // Version bumps on a content edit only (not a visibility/move/slug change).
+    if patch.tags.is_some() {
+        sets.push("tags = $tags");
+    }
+    // Version bumps on a content edit only (not a visibility/move/slug/tag change).
     if patch.title.is_some() || rendered_body.is_some() {
         sets.push("version = version + 1");
     }
@@ -272,6 +296,9 @@ pub async fn update_page(
     }
     if let Some(Some(p)) = patch.project_id {
         query = query.bind(("project", p.to_string()));
+    }
+    if let Some(t) = patch.tags {
+        query = query.bind(("tags", t.to_vec()));
     }
     let mut res = query.await?.check()?;
     Ok(res.take::<Vec<PageRow>>(1)?.into_iter().next())

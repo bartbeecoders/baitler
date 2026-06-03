@@ -6,7 +6,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::AppState;
 use reqwest::{Client, StatusCode};
 use serde_json::{json, Value};
@@ -36,6 +36,7 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        cli: CliConfig::default(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }
@@ -422,15 +423,25 @@ async fn pages_are_owner_scoped() {
     use baitler_api::pages::repo as pages;
     let db = &state.db;
 
-    let alice = pages::create_page(db, "alice", "A", "<p>a</p>", "html", "draft", None, None)
-        .await
-        .unwrap();
-    pages::create_page(db, "bob", "B", "<p>b</p>", "html", "draft", None, None)
+    let alice = pages::create_page(
+        db,
+        "alice",
+        "A",
+        "<p>a</p>",
+        "html",
+        "draft",
+        None,
+        None,
+        &[],
+    )
+    .await
+    .unwrap();
+    pages::create_page(db, "bob", "B", "<p>b</p>", "html", "draft", None, None, &[])
         .await
         .unwrap();
 
     assert_eq!(
-        pages::list_pages(db, "alice", None, None, None, None, 100, 0)
+        pages::list_pages(db, "alice", None, None, None, None, None, 100, 0)
             .await
             .unwrap()
             .len(),

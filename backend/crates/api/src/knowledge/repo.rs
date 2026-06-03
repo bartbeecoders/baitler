@@ -216,6 +216,8 @@ pub async fn project_members(db: &Db, owner: &str, project_id: &str) -> AppResul
         documents: members_of(db, owner, "document", project_id).await?,
         files: members_of(db, owner, "file", project_id).await?,
         pages: members_of(db, owner, "page", project_id).await?,
+        mindmaps: members_of(db, owner, "mindmap", project_id).await?,
+        diagrams: members_of(db, owner, "diagram", project_id).await?,
     })
 }
 
@@ -262,6 +264,8 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         documents: members.documents.len(),
         files: members.files.len(),
         pages: members.pages.len(),
+        mindmaps: members.mindmaps.len(),
+        diagrams: members.diagrams.len(),
         drafts,
     })
 }
@@ -435,16 +439,48 @@ pub async fn scrub_item_links(db: &Db, owner: &str, kind: &str, id: &str) -> App
 
 // ── Cross-type full-text search ───────────────────────────────────────────────
 
-/// Search ideas, documents, projects, and files by full text. Returns typed
-/// sections, each ranked by BM25 score then recency. Owner-scoped; backed by the
-/// per-field SEARCH indexes from migration 0008.
+/// Search ideas, documents, projects, files, and pages by full text. Returns
+/// typed sections, each ranked by BM25 score then recency. Owner-scoped; backed
+/// by the per-field SEARCH indexes from migrations 0008 (idea/document/project/
+/// file) and 0010 (page).
 pub async fn search(db: &Db, owner: &str, q: &str, limit: usize) -> AppResult<SearchResults> {
     Ok(SearchResults {
         ideas: search_two(db, owner, "idea", "title", "body", q, limit).await?,
         documents: search_two(db, owner, "document", "title", "body", q, limit).await?,
         projects: search_two(db, owner, "project", "name", "summary", q, limit).await?,
         files: search_one(db, owner, "file", "name", q, limit).await?,
+        pages: search_two(db, owner, "page", "title", "body", q, limit).await?,
+        mindmaps: search_two(db, owner, "mindmap", "title", "search_text", q, limit).await?,
+        diagrams: search_two(db, owner, "diagram", "title", "search_text", q, limit).await?,
     })
+}
+
+/// Cross-type tag taxonomy: every distinct tag used across this owner's ideas,
+/// documents, and pages with how many items carry it, ordered by count then name.
+/// Table names are trusted literals.
+pub async fn tag_counts(db: &Db, owner: &str) -> AppResult<Vec<super::model::TagCount>> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for table in ["idea", "document", "page"] {
+        let sql = format!("SELECT VALUE tags FROM {table} WHERE owner = $owner");
+        let mut res = db
+            .query(sql)
+            .bind(("owner", owner.to_string()))
+            .await?
+            .check()?;
+        let per_row: Vec<Vec<String>> = res.take(0)?;
+        for tags in per_row {
+            for tag in tags {
+                *counts.entry(tag).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut out: Vec<super::model::TagCount> = counts
+        .into_iter()
+        .map(|(tag, count)| super::model::TagCount { tag, count })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+    Ok(out)
 }
 
 /// Search a table whose text lives in two fields (`@0@` / `@1@`). The snippet
