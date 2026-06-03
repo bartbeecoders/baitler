@@ -67,7 +67,9 @@ pub async fn create_project(
     summary: &str,
 ) -> AppResult<ProjectRow> {
     let uuid = Uuid::new_v4().to_string();
-    let slug = unique_slug(db, owner, &slugify(name)).await?;
+    let slug =
+        crate::slug::unique_slug(db, owner, "project", &crate::slug::slugify(name, "project"))
+            .await?;
     let sql = format!(
         "CREATE project CONTENT {{ uuid: $uuid, owner: $owner, name: $name, slug: $slug, \
          summary: $summary, status: \"active\" }}; \
@@ -213,6 +215,9 @@ pub async fn project_members(db: &Db, owner: &str, project_id: &str) -> AppResul
         ideas: members_of(db, owner, "idea", project_id).await?,
         documents: members_of(db, owner, "document", project_id).await?,
         files: members_of(db, owner, "file", project_id).await?,
+        pages: members_of(db, owner, "page", project_id).await?,
+        mindmaps: members_of(db, owner, "mindmap", project_id).await?,
+        diagrams: members_of(db, owner, "diagram", project_id).await?,
     })
 }
 
@@ -223,8 +228,13 @@ async fn members_of(
     project_id: &str,
 ) -> AppResult<Vec<MemberItem>> {
     let tcol = title_col(table);
-    // Files have no `review`; project the column as NONE so the shape is uniform.
-    let review_expr = if table == "file" { "NONE" } else { "review" };
+    // Files and pages have no `review` field (pages gate on `visibility`); project
+    // the column as NONE so the member shape is uniform across types.
+    let review_expr = if table == "file" || table == "page" {
+        "NONE"
+    } else {
+        "review"
+    };
     // `updated_at` is projected only so it can drive ORDER BY (SurrealDB requires
     // the ordered idiom to be selected); `MemberItem` deserialization ignores it.
     let sql = format!(
@@ -253,6 +263,9 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         ideas: members.ideas.len(),
         documents: members.documents.len(),
         files: members.files.len(),
+        pages: members.pages.len(),
+        mindmaps: members.mindmaps.len(),
+        diagrams: members.diagrams.len(),
         drafts,
     })
 }
@@ -426,16 +439,48 @@ pub async fn scrub_item_links(db: &Db, owner: &str, kind: &str, id: &str) -> App
 
 // ── Cross-type full-text search ───────────────────────────────────────────────
 
-/// Search ideas, documents, projects, and files by full text. Returns typed
-/// sections, each ranked by BM25 score then recency. Owner-scoped; backed by the
-/// per-field SEARCH indexes from migration 0008.
+/// Search ideas, documents, projects, files, and pages by full text. Returns
+/// typed sections, each ranked by BM25 score then recency. Owner-scoped; backed
+/// by the per-field SEARCH indexes from migrations 0008 (idea/document/project/
+/// file) and 0010 (page).
 pub async fn search(db: &Db, owner: &str, q: &str, limit: usize) -> AppResult<SearchResults> {
     Ok(SearchResults {
         ideas: search_two(db, owner, "idea", "title", "body", q, limit).await?,
         documents: search_two(db, owner, "document", "title", "body", q, limit).await?,
         projects: search_two(db, owner, "project", "name", "summary", q, limit).await?,
         files: search_one(db, owner, "file", "name", q, limit).await?,
+        pages: search_two(db, owner, "page", "title", "body", q, limit).await?,
+        mindmaps: search_two(db, owner, "mindmap", "title", "search_text", q, limit).await?,
+        diagrams: search_two(db, owner, "diagram", "title", "search_text", q, limit).await?,
     })
+}
+
+/// Cross-type tag taxonomy: every distinct tag used across this owner's ideas,
+/// documents, and pages with how many items carry it, ordered by count then name.
+/// Table names are trusted literals.
+pub async fn tag_counts(db: &Db, owner: &str) -> AppResult<Vec<super::model::TagCount>> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for table in ["idea", "document", "page"] {
+        let sql = format!("SELECT VALUE tags FROM {table} WHERE owner = $owner");
+        let mut res = db
+            .query(sql)
+            .bind(("owner", owner.to_string()))
+            .await?
+            .check()?;
+        let per_row: Vec<Vec<String>> = res.take(0)?;
+        for tags in per_row {
+            for tag in tags {
+                *counts.entry(tag).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut out: Vec<super::model::TagCount> = counts
+        .into_iter()
+        .map(|(tag, count)| super::model::TagCount { tag, count })
+        .collect();
+    out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
+    Ok(out)
 }
 
 /// Search a table whose text lives in two fields (`@0@` / `@1@`). The snippet
@@ -497,65 +542,4 @@ async fn run_search(
     Ok(res.take(0)?)
 }
 
-// ── Slug helpers ──────────────────────────────────────────────────────────────
-
-/// Lowercase, ASCII-alnum, dash-separated slug. Empty input → "project".
-fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    let mut prev_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash && !out.is_empty() {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    let slug = out.trim_matches('-').to_string();
-    if slug.is_empty() {
-        "project".to_string()
-    } else {
-        slug
-    }
-}
-
-/// Pick a slug free within the owner's namespace, appending `-2`, `-3`, … on collision.
-async fn unique_slug(db: &Db, owner: &str, base: &str) -> AppResult<String> {
-    let mut res = db
-        .query(
-            "SELECT VALUE slug FROM project WHERE owner = $owner AND \
-             (slug = $base OR string::starts_with(slug, $prefix))",
-        )
-        .bind(("owner", owner.to_string()))
-        .bind(("base", base.to_string()))
-        .bind(("prefix", format!("{base}-")))
-        .await?
-        .check()?;
-    let taken: Vec<String> = res.take(0)?;
-    if !taken.contains(&base.to_string()) {
-        return Ok(base.to_string());
-    }
-    for n in 2..10_000 {
-        let cand = format!("{base}-{n}");
-        if !taken.contains(&cand) {
-            return Ok(cand);
-        }
-    }
-    // Pathological fallback: a uuid suffix is guaranteed unique.
-    Ok(format!("{base}-{}", Uuid::new_v4()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::slugify;
-
-    #[test]
-    fn slugify_basics() {
-        assert_eq!(slugify("My Cool Project!"), "my-cool-project");
-        assert_eq!(slugify("  spaced  out  "), "spaced-out");
-        assert_eq!(slugify("Rust 2.0 — notes"), "rust-2-0-notes");
-        assert_eq!(slugify("***"), "project");
-        assert_eq!(slugify(""), "project");
-    }
-}
+// Slug generation lives in `crate::slug` (shared with pages, Phase 12).

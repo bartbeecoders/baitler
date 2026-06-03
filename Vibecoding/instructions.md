@@ -50,3 +50,34 @@ Through the MCP server, the ai agents (claude code, grok code, hermes agent etc.
 - access the data in Baitler and use it to answer questions, generate content, and perform other tasks.
 
 Work this idea out completely and add this to the plan.md.
+
+## Web page hosting
+
+I want to be able to host web pages on Baitler. The web pages should be able to be created from markdown, html, or other formats. The web pages should be able to be published and shared with others. The web pages should be able to be accessed via a url. The web pages should be able to be edited and updated. The web pages should be able to be deleted. The web pages should be able to be organized in folders. The web pages should be able to be searched. The web pages should be able to be filtered by type, date, author, etc. The web pages should be able to be shared with others. The web pages should be able to be published and shared with others. The web pages should be able to be accessed via a url. The web pages should be able to be edited and updated. The web pages should be able to be deleted. The web pages should be able to be organized in folders. The web pages should be able to be searched. The web pages should be able to be filtered by type, date, author, etc.
+
+Work this idea out completely and add this to the plan.md.
+
+## document, information, web organisation improvements
+
+Add metadata (tags) to documents, information, and web pages to improve organization and searchability.
+Add mindmap capability to organize ideas and information visually.
+Add draw.io integration for diagram creation and management.
+
+Work this idea out completely and add this to the plan.md.
+
+
+## Claude code cli integration
+
+Integrate Claude Code CLI so a user can invoke it from within the application to perform tasks.
+Build a cli wrapper that can be used to invoke claude code commands from within the application.
+
+Work this idea out completely and add this to the plan.md.
+
+## add minimax 
+
+Add minimax (Minimax-M3) as an AI agent provider. see https://platform.minimax.io/docs/token-plan/other-tools for docs.
+
+Add a selection to the agent panel to choose the AI agent provider. (Claude code or Minimax-M3)
+
+Put the agent page as a right hand pane on each of the pages (Files,Ideas, Documents, Web Pages, etc.)
+This way we will let the agent interact with the content in the current page.

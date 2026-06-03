@@ -8,10 +8,12 @@
 
 pub mod activity;
 pub mod ai;
+pub mod cli;
 pub mod config;
 pub mod convert;
 pub mod crypto;
 pub mod db;
+pub mod diagrams;
 pub mod documents;
 pub mod error;
 pub mod files;
@@ -20,10 +22,14 @@ pub mod knowledge;
 pub mod llm;
 pub mod mcp;
 pub mod migrations;
+pub mod mindmap;
 pub mod owner;
+pub mod pages;
 pub mod routes;
+pub mod slug;
 pub mod state;
 pub mod storage;
+pub mod tags;
 pub mod telemetry;
 
 pub use config::Config;
@@ -78,6 +84,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind_addr = config.bind_addr;
 
     let state = build_state(config).await?;
+    cli::log_startup(&state.config.cli, state.cli_runner.as_ref()).await;
     let app = build_app(state);
 
     let listener = TcpListener::bind(bind_addr).await?;

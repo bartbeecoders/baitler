@@ -32,11 +32,23 @@ struct DocumentListResponse {
     documents: Vec<DocumentSummary>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    #[serde(default)]
+    tag: Option<String>,
+}
+
 async fn list(
     State(state): State<AppState>,
     CurrentOwner(owner): CurrentOwner,
+    Query(q): Query<ListQuery>,
 ) -> AppResult<Json<DocumentListResponse>> {
-    let docs = repo::list_documents(&state.db, &owner).await?;
+    let docs = repo::list_documents(
+        &state.db,
+        &owner,
+        q.tag.as_deref().filter(|s| !s.is_empty()),
+    )
+    .await?;
     Ok(Json(DocumentListResponse {
         documents: docs.into_iter().map(Into::into).collect(),
     }))
@@ -49,7 +61,9 @@ async fn create(
 ) -> AppResult<(StatusCode, Json<DocumentDto>)> {
     let title = clean_title(&body.title)?;
     let html = clean_body(body.body.as_deref().unwrap_or(""))?;
-    let doc = repo::create_document(&state.db, &owner, &title, &html, "published", None).await?;
+    let tags = crate::tags::normalize_tags(body.tags.unwrap_or_default())?;
+    let doc =
+        repo::create_document(&state.db, &owner, &title, &html, "published", None, &tags).await?;
     Ok((StatusCode::CREATED, Json(doc.into())))
 }
 
@@ -87,6 +101,10 @@ async fn update(
         Some(r) => Some(clean_review(r)?),
         None => None,
     };
+    let tags = match body.tags {
+        Some(t) => Some(crate::tags::normalize_tags(t)?),
+        None => None,
+    };
 
     let updated = repo::update_document(
         db,
@@ -95,6 +113,7 @@ async fn update(
         title.as_deref(),
         html.as_deref(),
         review.as_deref(),
+        tags.as_deref(),
     )
     .await?
     .ok_or(AppError::NotFound)?;

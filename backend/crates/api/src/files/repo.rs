@@ -124,7 +124,19 @@ pub async fn folder_is_empty(db: &Db, owner: &str, uuid: &str) -> AppResult<bool
     if !list_folders(db, owner, Some(uuid)).await?.is_empty() {
         return Ok(false);
     }
-    Ok(list_files(db, owner, Some(uuid)).await?.is_empty())
+    if !list_files(db, owner, Some(uuid)).await?.is_empty() {
+        return Ok(false);
+    }
+    // Pages (Phase 12) reuse this same folder tree via `page.folder_id`, so a
+    // folder holding a page is not empty either.
+    let mut res = db
+        .query("SELECT VALUE uuid FROM page WHERE owner = $owner AND folder_id = $folder")
+        .bind(("owner", owner.to_string()))
+        .bind(("folder", uuid.to_string()))
+        .await?
+        .check()?;
+    let pages: Vec<String> = res.take(0)?;
+    Ok(pages.is_empty())
 }
 
 /// Delete a folder by uuid. Callers must ensure it exists and is empty first.

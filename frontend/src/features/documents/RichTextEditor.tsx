@@ -27,7 +27,6 @@ export function RichTextEditor({ initialHtml, onChange }: Props) {
   const editor = useEditor({
     extensions: [StarterKit],
     content: initialHtml,
-    immediatelyRender: false,
     editorProps: {
       attributes: {
         class:

@@ -14,7 +14,8 @@ use crate::owner::CurrentOwner;
 use crate::state::AppState;
 
 use super::model::{
-    MemberCounts, ProjectDto, ProjectMembers, ReviewQueue, SearchResults, PROJECT_STATUSES,
+    MemberCounts, ProjectDto, ProjectMembers, ReviewQueue, SearchResults, TagCount,
+    PROJECT_STATUSES,
 };
 use super::repo;
 
@@ -35,6 +36,22 @@ pub fn router() -> Router<AppState> {
         .route("/knowledge/search", get(search))
         .route("/review", get(review_queue))
         .route("/activity", get(activity_timeline))
+        .route("/tags", get(tags))
+}
+
+#[derive(Debug, Serialize)]
+struct TagsResponse {
+    tags: Vec<TagCount>,
+}
+
+/// `GET /tags` — the cross-type tag taxonomy (idea + document + page).
+async fn tags(
+    State(state): State<AppState>,
+    CurrentOwner(owner): CurrentOwner,
+) -> AppResult<Json<TagsResponse>> {
+    Ok(Json(TagsResponse {
+        tags: repo::tag_counts(&state.db, &owner).await?,
+    }))
 }
 
 #[derive(Debug, Serialize)]

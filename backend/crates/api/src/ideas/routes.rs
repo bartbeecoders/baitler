@@ -20,8 +20,6 @@ const MAX_LIMIT: usize = 500;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_TITLE: usize = 200;
 const MAX_BODY: usize = 1_000_000;
-const MAX_TAGS: usize = 50;
-const MAX_TAG_LEN: usize = 50;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -96,7 +94,7 @@ async fn create(
 ) -> AppResult<(StatusCode, Json<IdeaDto>)> {
     let title = clean_title(&body.title)?;
     let text = clean_body(body.body.as_deref().unwrap_or(""))?;
-    let tags = clean_tags(body.tags.unwrap_or_default())?;
+    let tags = crate::tags::normalize_tags(body.tags.unwrap_or_default())?;
     let status = match body.status.as_deref() {
         Some(s) => clean_status(s)?,
         None => "inbox".to_string(),
@@ -151,7 +149,7 @@ async fn update(
         None => None,
     };
     let tags = match body.tags {
-        Some(t) => Some(clean_tags(t)?),
+        Some(t) => Some(crate::tags::normalize_tags(t)?),
         None => None,
     };
     let status = match &body.status {
@@ -255,25 +253,4 @@ fn clean_review(review: &str) -> AppResult<String> {
             REVIEWS.join(", ")
         )))
     }
-}
-
-fn clean_tags(tags: Vec<String>) -> AppResult<Vec<String>> {
-    let mut cleaned: Vec<String> = Vec::new();
-    for tag in tags {
-        let trimmed = tag.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.chars().count() > MAX_TAG_LEN {
-            return Err(AppError::BadRequest("a tag is too long".into()));
-        }
-        let tag = trimmed.to_string();
-        if !cleaned.contains(&tag) {
-            cleaned.push(tag);
-        }
-    }
-    if cleaned.len() > MAX_TAGS {
-        return Err(AppError::BadRequest("too many tags".into()));
-    }
-    Ok(cleaned)
 }

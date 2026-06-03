@@ -5,7 +5,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::documents::repo as doc_repo;
 use baitler_api::files::repo as files_repo;
 use baitler_api::ideas::repo as ideas_repo;
@@ -36,6 +36,8 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        cli: CliConfig::default(),
+        public_page_origin: None,
         secret_key: [7u8; 32],
     }
 }
@@ -85,7 +87,7 @@ async fn membership_counts_and_detach_on_project_delete() {
     let idea = ideas_repo::create_idea(db, "dev", "Note", "", &[], "inbox", "draft", None)
         .await
         .unwrap();
-    let doc = doc_repo::create_document(db, "dev", "Doc", "<p>x</p>", "published", None)
+    let doc = doc_repo::create_document(db, "dev", "Doc", "<p>x</p>", "published", None, &[])
         .await
         .unwrap();
     let file = files_repo::create_file(db, "dev", "f1", "a.txt", "text/plain", 3, None, "key1")
@@ -138,7 +140,7 @@ async fn cross_type_links_are_symmetric_and_scrubbed_on_delete() {
     let idea = ideas_repo::create_idea(db, "dev", "Idea", "", &[], "inbox", "draft", None)
         .await
         .unwrap();
-    let doc = doc_repo::create_document(db, "dev", "Doc", "<p>x</p>", "draft", None)
+    let doc = doc_repo::create_document(db, "dev", "Doc", "<p>x</p>", "draft", None, &[])
         .await
         .unwrap();
 
@@ -243,6 +245,7 @@ async fn cross_type_full_text_search() {
         "<p>ownership and lifetimes</p>",
         "published",
         None,
+        &[],
     )
     .await
     .unwrap();

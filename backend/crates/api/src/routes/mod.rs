@@ -25,12 +25,19 @@ pub fn router(state: AppState) -> Router {
     let ai = crate::ai::routes::router();
     let documents = crate::documents::routes::router();
     let knowledge = crate::knowledge::routes::router();
+    let pages = crate::pages::routes::router();
+    let mindmaps = crate::mindmap::routes::router();
+    let diagrams = crate::diagrams::routes::router();
+    let cli = crate::cli::routes::router();
     // The MCP server reuses the same state/repos. Its routes carry their own,
     // larger body limit for Base64 tool payloads.
     let mcp =
         crate::mcp::router(&state.config.mcp).layer(DefaultBodyLimit::max(MCP_MAX_BODY_BYTES));
 
-    Router::new()
+    // The authenticated/credentialed API: everything that is owner-scoped and
+    // CORS-shared with the app frontend. The credentialed `cors` layer applies
+    // ONLY here.
+    let api = Router::new()
         .route("/health", get(health::health))
         .route("/version", get(health::version))
         .merge(files)
@@ -38,10 +45,24 @@ pub fn router(state: AppState) -> Router {
         .merge(ai)
         .merge(documents)
         .merge(knowledge)
+        .merge(pages)
+        .merge(mindmaps)
+        .merge(diagrams)
+        .merge(cli)
         .merge(mcp)
         .fallback(not_found)
+        .layer(cors);
+
+    // The PUBLIC page surface (`GET /p/{slug}`, Phase 12) is merged OUTSIDE the
+    // credentialed CORS layer and (later) any auth middleware — it serves
+    // owner-less HTML to anyone and must never inherit cookie/CORS behaviour.
+    // Its own locked-down CSP/headers are set in `pages::public`.
+    let public_pages = crate::pages::public::router();
+
+    Router::new()
+        .merge(api)
+        .merge(public_pages)
         .layer(TraceLayer::new_for_http())
-        .layer(cors)
         .with_state(state)
 }
 

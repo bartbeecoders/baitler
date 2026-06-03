@@ -34,7 +34,7 @@ function jsonInit(method: string, body: unknown): RequestInit {
 export function useCreateDocument() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { title: string; body?: string }) =>
+    mutationFn: (input: { title: string; body?: string; tags?: string[] }) =>
       apiFetch<Document>('/documents', jsonInit('POST', input)),
     onSuccess: () => qc.invalidateQueries({ queryKey: DOCS_ROOT }),
   });
@@ -43,8 +43,13 @@ export function useCreateDocument() {
 export function useUpdateDocument() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { title?: string; body?: string } }) =>
-      apiFetch<Document>(`/documents/${id}`, jsonInit('PATCH', patch)),
+    mutationFn: ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: { title?: string; body?: string; tags?: string[] };
+    }) => apiFetch<Document>(`/documents/${id}`, jsonInit('PATCH', patch)),
     onSuccess: () => qc.invalidateQueries({ queryKey: DOCS_ROOT }),
   });
 }

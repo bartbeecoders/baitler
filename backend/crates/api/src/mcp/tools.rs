@@ -17,6 +17,8 @@ use crate::activity;
 use crate::ai::repo as ai_repo;
 use crate::convert::{self, SourceFormat, TargetFormat};
 use crate::crypto;
+use crate::diagrams::model::{DiagramDto, DiagramSummary};
+use crate::diagrams::repo::{self as diagrams_repo, DiagramPatch};
 use crate::documents::model::{DocumentDto, DocumentSummary};
 use crate::documents::repo as doc_repo;
 use crate::error::AppError;
@@ -27,6 +29,13 @@ use crate::ideas::repo as ideas_repo;
 use crate::knowledge::model::{ProjectDto, PROJECT_STATUSES};
 use crate::knowledge::repo as kn;
 use crate::llm::{ChatMessage, ChatRequest};
+use crate::mindmap::model::{
+    from_markdown_outline, Graph, MindmapDto, MindmapSummary,
+    SOURCE_FORMATS as MINDMAP_SOURCE_FORMATS,
+};
+use crate::mindmap::repo::{self as mindmap_repo, MindmapPatch};
+use crate::pages::model::{PageDto, PageSummary, SOURCE_FORMATS, VISIBILITIES};
+use crate::pages::repo::{self as pages_repo, PagePatch};
 use crate::state::AppState;
 
 use super::b64;
@@ -88,7 +97,7 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "ideas_unlink" => ideas_unlink(state, owner, args).await,
         "ideas_tags" => ideas_tags(state, owner).await,
         // Documents
-        "documents_list" => documents_list(state, owner).await,
+        "documents_list" => documents_list(state, owner, args).await,
         "documents_get" => documents_get(state, owner, args).await,
         "documents_create" => documents_create(state, owner, args).await,
         "documents_update" => documents_update(state, owner, args).await,
@@ -99,6 +108,7 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "files_get" => files_get(state, owner, args).await,
         "files_read" => files_read(state, owner, args).await,
         "files_write" => files_write(state, owner, args).await,
+        "files_import" => files_import(state, owner, args).await,
         "files_delete" => files_delete(state, owner, args).await,
         "folders_create" => folders_create(state, owner, args).await,
         // Projects
@@ -109,11 +119,33 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "projects_delete" => projects_delete(state, owner, args).await,
         "projects_add_item" => projects_add_item(state, owner, args).await,
         "projects_remove_item" => projects_remove_item(state, owner, args).await,
+        // Pages (hosted web pages)
+        "pages_list" => pages_list(state, owner, args).await,
+        "pages_get" => pages_get(state, owner, args).await,
+        "pages_create" => pages_create(state, owner, args).await,
+        "pages_update" => pages_update(state, owner, args).await,
+        "pages_delete" => pages_delete(state, owner, args).await,
+        "pages_publish" => pages_publish(state, owner, args).await,
+        "pages_unpublish" => pages_unpublish(state, owner, args).await,
+        // Mindmaps (visual idea maps)
+        "mindmaps_list" => mindmaps_list(state, owner, args).await,
+        "mindmaps_get" => mindmaps_get(state, owner, args).await,
+        "mindmaps_create" => mindmaps_create(state, owner, args).await,
+        "mindmaps_update" => mindmaps_update(state, owner, args).await,
+        "mindmaps_delete" => mindmaps_delete(state, owner, args).await,
+        "mindmaps_from_project" => mindmaps_from_project(state, owner, args).await,
+        // Diagrams (draw.io / mxGraph)
+        "diagrams_list" => diagrams_list(state, owner, args).await,
+        "diagrams_get" => diagrams_get(state, owner, args).await,
+        "diagrams_create" => diagrams_create(state, owner, args).await,
+        "diagrams_update" => diagrams_update(state, owner, args).await,
+        "diagrams_delete" => diagrams_delete(state, owner, args).await,
         // Knowledge graph + search
         "knowledge_link" => knowledge_link(state, owner, args).await,
         "knowledge_unlink" => knowledge_unlink(state, owner, args).await,
         "knowledge_backlinks" => knowledge_backlinks(state, owner, args).await,
         "knowledge_search" => knowledge_search(state, owner, args).await,
+        "knowledge_tags" => knowledge_tags(state, owner).await,
         // Publishing & export
         "documents_publish" => documents_publish(state, owner, args).await,
         "collection_export" => collection_export(state, owner, args).await,
@@ -445,8 +477,9 @@ async fn ideas_tags(state: &AppState, owner: &str) -> ToolResult {
 
 // ── Documents ─────────────────────────────────────────────────────────────────
 
-async fn documents_list(state: &AppState, owner: &str) -> ToolResult {
-    let docs = doc_repo::list_documents(&state.db, owner).await?;
+async fn documents_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let docs =
+        doc_repo::list_documents(&state.db, owner, opt_trimmed(args, "tag").as_deref()).await?;
     let dtos: Vec<DocumentSummary> = docs.into_iter().map(Into::into).collect();
     Ok(json!({ "documents": dtos }))
 }
@@ -468,6 +501,7 @@ async fn documents_create(state: &AppState, owner: &str, args: &Value) -> ToolRe
     let html = convert::sanitize(&raw);
     let review = clean_review(args)?;
     let project_id = resolve_project_arg(state, owner, args).await?;
+    let tags = clean_tags(opt_str_array(args, "tags").unwrap_or_default())?;
     let doc = doc_repo::create_document(
         &state.db,
         owner,
@@ -475,6 +509,7 @@ async fn documents_create(state: &AppState, owner: &str, args: &Value) -> ToolRe
         &html,
         &review,
         project_id.as_deref(),
+        &tags,
     )
     .await?;
     Ok(json!(DocumentDto::from(doc)))
@@ -496,6 +531,10 @@ async fn documents_update(state: &AppState, owner: &str, args: &Value) -> ToolRe
         None => None,
     };
     let review = opt_review(args)?;
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => Some(clean_tags(t)?),
+        None => None,
+    };
 
     let updated = doc_repo::update_document(
         &state.db,
@@ -504,6 +543,7 @@ async fn documents_update(state: &AppState, owner: &str, args: &Value) -> ToolRe
         title.as_deref(),
         html.as_deref(),
         review.as_deref(),
+        tags.as_deref(),
     )
     .await?
     .ok_or_else(not_found)?;
@@ -688,6 +728,146 @@ async fn files_write(state: &AppState, owner: &str, args: &Value) -> ToolResult 
             Err(e.into())
         }
     }
+}
+
+/// Per-extension MIME so imported images/docs get a sensible content type
+/// (previews, downloads). Unknown → octet-stream.
+fn mime_from_ext(name: &str) -> &'static str {
+    match name
+        .rsplit('.')
+        .next()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("bmp") => "image/bmp",
+        Some("heic") => "image/heic",
+        Some("pdf") => "application/pdf",
+        Some("txt") => "text/plain",
+        Some("md") => "text/markdown",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Upper bound on files imported in one `files_import` call (a runaway guard).
+const MAX_IMPORT_FILES: usize = 500;
+
+/// Import local files into Baitler Files, **server-side** — the server reads the
+/// bytes from disk directly, so the agent never has to base64 binary content
+/// through its context, and no host shell is needed. The path must resolve within
+/// an allow-listed root (`CLAUDE_CLI_WORKSPACE_ROOTS`); a directory imports its
+/// files (optionally recursive, symlinks not followed).
+async fn files_import(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let path = req_str(args, "path")?;
+    let folder = opt_trimmed(args, "folder");
+    let recursive = args
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if let Some(f) = folder.as_deref() {
+        files_repo::get_folder(db, owner, f)
+            .await?
+            .ok_or_else(|| invalid("target folder does not exist"))?;
+    }
+
+    let target = crate::cli::resolve_under_roots(&state.config.cli.workspace_roots, &path)
+        .map_err(invalid)?;
+
+    // Collect candidate files (a single file, or a directory walk).
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut truncated = false;
+    if target.is_file() {
+        files.push(target);
+    } else if target.is_dir() {
+        let mut stack = vec![target];
+        'walk: while let Some(dir) = stack.pop() {
+            let mut rd = tokio::fs::read_dir(&dir)
+                .await
+                .map_err(|e| invalid(format!("could not read directory: {e}")))?;
+            while let Some(entry) = rd
+                .next_entry()
+                .await
+                .map_err(|e| invalid(format!("could not read directory: {e}")))?
+            {
+                let Ok(ft) = entry.file_type().await else {
+                    continue;
+                };
+                // Don't follow symlinks (could escape the allow-listed root).
+                if ft.is_dir() {
+                    if recursive {
+                        stack.push(entry.path());
+                    }
+                } else if ft.is_file() {
+                    files.push(entry.path());
+                    if files.len() >= MAX_IMPORT_FILES {
+                        truncated = true;
+                        break 'walk;
+                    }
+                }
+            }
+        }
+    } else {
+        return Err(invalid("path is neither a file nor a directory"));
+    }
+
+    let mut imported: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    for p in files {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bytes = match tokio::fs::read(&p).await {
+            Ok(b) => b,
+            Err(e) => {
+                skipped.push(json!({ "name": name, "reason": format!("unreadable: {e}") }));
+                continue;
+            }
+        };
+        if bytes.len() > MAX_BLOB {
+            skipped.push(json!({ "name": name, "reason": format!("exceeds {MAX_BLOB} bytes") }));
+            continue;
+        }
+        let storage_key = Uuid::new_v4().to_string();
+        if let Err(e) = state.storage.put(&storage_key, &bytes).await {
+            skipped.push(json!({ "name": name, "reason": format!("storage error: {e}") }));
+            continue;
+        }
+        match files_repo::create_file(
+            db,
+            owner,
+            &storage_key,
+            &name,
+            mime_from_ext(&name),
+            bytes.len() as i64,
+            folder.as_deref(),
+            &storage_key,
+        )
+        .await
+        {
+            Ok(file) => imported.push(json!({ "id": file.uuid, "name": file.name })),
+            Err(e) => {
+                let _ = state.storage.delete(&storage_key).await;
+                skipped.push(json!({ "name": name, "reason": format!("{e}") }));
+            }
+        }
+    }
+
+    Ok(json!({
+        "imported": imported,
+        "count": imported.len(),
+        "skipped": skipped,
+        "truncated": truncated,
+        "folder": folder,
+        // `name` powers the activity row's target_title.
+        "name": format!("{} file(s)", imported.len()),
+    }))
 }
 
 async fn files_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
@@ -900,6 +1080,564 @@ async fn projects_remove_item(state: &AppState, owner: &str, args: &Value) -> To
     Ok(json!({ "removed": true, "id": item_id, "item_type": item_type }))
 }
 
+// ── Pages (hosted web pages) ────────────────────────────────────────────────
+
+/// Validate a page `source_format` arg, defaulting to `html`.
+fn clean_source_format(args: &Value) -> Result<String, ToolError> {
+    match opt_trimmed(args, "source_format") {
+        Some(f) if SOURCE_FORMATS.contains(&f.as_str()) => Ok(f),
+        Some(_) => Err(invalid(format!(
+            "invalid source_format (expected one of: {})",
+            SOURCE_FORMATS.join(", ")
+        ))),
+        None => Ok("html".to_string()),
+    }
+}
+
+/// Validate a page `visibility` arg against the whitelist.
+fn clean_visibility(v: &str) -> Result<String, ToolError> {
+    if VISIBILITIES.contains(&v) {
+        Ok(v.to_string())
+    } else {
+        Err(invalid(format!(
+            "invalid visibility (expected one of: {})",
+            VISIBILITIES.join(", ")
+        )))
+    }
+}
+
+/// Read an optional `folder_id` arg, validating it names an existing owned folder.
+async fn resolve_folder_arg(
+    state: &AppState,
+    owner: &str,
+    args: &Value,
+) -> Result<Option<String>, ToolError> {
+    match opt_trimmed(args, "folder_id") {
+        Some(f) => {
+            files_repo::get_folder(&state.db, owner, &f)
+                .await?
+                .ok_or_else(|| invalid("folder_id does not match an existing folder"))?;
+            Ok(Some(f))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Make a page DTO's `public_url` absolute against the configured public origin.
+fn page_dto(state: &AppState, page: crate::pages::model::PageRow) -> PageDto {
+    PageDto::from(page).with_origin(state.config.public_page_origin.as_deref())
+}
+
+async fn pages_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let folder = opt_trimmed(args, "folder_id");
+    let project = opt_trimmed(args, "project_id");
+    let tag = opt_trimmed(args, "tag");
+    let q = opt_trimmed(args, "q");
+    let visibility = match opt_trimmed(args, "visibility") {
+        Some(v) => Some(clean_visibility(&v)?),
+        None => None,
+    };
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+
+    let pages = pages_repo::list_pages(
+        &state.db,
+        owner,
+        folder.as_deref(),
+        visibility.as_deref(),
+        project.as_deref(),
+        tag.as_deref(),
+        q.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let origin = state.config.public_page_origin.as_deref();
+    let dtos: Vec<PageSummary> = pages
+        .into_iter()
+        .map(|p| PageSummary::from(p).with_origin(origin))
+        .collect();
+    Ok(json!({ "pages": dtos }))
+}
+
+async fn pages_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let page = pages_repo::get_page(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(page_dto(state, page)))
+}
+
+async fn pages_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let title = clean_title(&req_str(args, "title")?)?;
+    // Visibility defaults to `draft` so an agent's page is never self-published.
+    let visibility = match opt_trimmed(args, "visibility") {
+        Some(v) => clean_visibility(&v)?,
+        None => "draft".to_string(),
+    };
+
+    // `from_document` is the one-way promote bridge: copy a document's already-
+    // sanitized HTML body. Otherwise use the supplied body + source format.
+    let (raw_body, source_format) = match opt_trimmed(args, "from_document") {
+        Some(doc_id) => {
+            let doc = doc_repo::get_document(db, owner, &doc_id)
+                .await?
+                .ok_or_else(|| invalid("from_document does not match an existing document"))?;
+            (doc.body, "html".to_string())
+        }
+        None => (
+            opt_str(args, "body").unwrap_or_default(),
+            clean_source_format(args)?,
+        ),
+    };
+    if raw_body.len() > MAX_DOC_BODY {
+        return Err(invalid("page is too large"));
+    }
+
+    let folder_id = resolve_folder_arg(state, owner, args).await?;
+    let project_id = resolve_project_arg(state, owner, args).await?;
+    let tags = clean_tags(opt_str_array(args, "tags").unwrap_or_default())?;
+
+    let page = pages_repo::create_page(
+        db,
+        owner,
+        &title,
+        &raw_body,
+        &source_format,
+        &visibility,
+        folder_id.as_deref(),
+        project_id.as_deref(),
+        &tags,
+    )
+    .await?;
+    Ok(json!(page_dto(state, page)))
+}
+
+async fn pages_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let id = req_str(args, "id")?;
+    pages_repo::get_page(db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+
+    let title = match opt_str(args, "title") {
+        Some(t) => Some(clean_title(&t)?),
+        None => None,
+    };
+    if let Some(b) = args.get("body").and_then(|v| v.as_str()) {
+        if b.len() > MAX_DOC_BODY {
+            return Err(invalid("page is too large"));
+        }
+    }
+    let source_format = match opt_trimmed(args, "source_format") {
+        Some(_) => Some(clean_source_format(args)?),
+        None => None,
+    };
+    let visibility = match opt_trimmed(args, "visibility") {
+        Some(v) => Some(clean_visibility(&v)?),
+        None => None,
+    };
+    // Validate move targets exist before patching.
+    let folder_arg = opt_trimmed(args, "folder_id");
+    if let Some(f) = folder_arg.as_deref() {
+        files_repo::get_folder(db, owner, f)
+            .await?
+            .ok_or_else(|| invalid("folder_id does not match an existing folder"))?;
+    }
+    let project_arg = opt_trimmed(args, "project_id");
+    if let Some(p) = project_arg.as_deref() {
+        if kn::get_project(db, owner, p).await?.is_none() {
+            return Err(invalid("project_id does not match an existing project"));
+        }
+    }
+
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => Some(clean_tags(t)?),
+        None => None,
+    };
+
+    let patch = PagePatch {
+        title: title.as_deref(),
+        body: args.get("body").and_then(|v| v.as_str()),
+        source_format: source_format.as_deref(),
+        slug: None,
+        visibility: visibility.as_deref(),
+        folder_id: folder_arg.as_deref().map(Some),
+        project_id: project_arg.as_deref().map(Some),
+        tags: tags.as_deref(),
+    };
+    let updated = pages_repo::update_page(db, owner, &id, patch)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(page_dto(state, updated)))
+}
+
+async fn pages_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    if pages_repo::delete_page(&state.db, owner, &id).await? {
+        Ok(json!({ "deleted": true, "id": id }))
+    } else {
+        Err(not_found())
+    }
+}
+
+async fn pages_publish(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let visibility = match opt_trimmed(args, "visibility") {
+        Some(v) => clean_visibility(&v)?,
+        None => "public".to_string(),
+    };
+    if visibility == "draft" {
+        return Err(invalid(
+            "publish expects unlisted or public; use pages_unpublish for draft",
+        ));
+    }
+    let patch = PagePatch {
+        visibility: Some(&visibility),
+        ..PagePatch::default()
+    };
+    let page = pages_repo::update_page(&state.db, owner, &id, patch)
+        .await?
+        .ok_or_else(not_found)?;
+    let dto = page_dto(state, page);
+    Ok(json!({
+        "published": true, "id": dto.id, "title": dto.title,
+        "visibility": dto.visibility, "url": dto.public_url
+    }))
+}
+
+async fn pages_unpublish(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let patch = PagePatch {
+        visibility: Some("draft"),
+        ..PagePatch::default()
+    };
+    let page = pages_repo::update_page(&state.db, owner, &id, patch)
+        .await?
+        .ok_or_else(not_found)?;
+    let dto = page_dto(state, page);
+    Ok(json!({ "unpublished": true, "id": dto.id, "title": dto.title }))
+}
+
+// ── Mindmaps (visual idea maps) ─────────────────────────────────────────────
+
+/// Validate a mindmap `source_format` arg, defaulting to `json`.
+fn clean_mindmap_format(args: &Value) -> Result<String, ToolError> {
+    match opt_trimmed(args, "source_format") {
+        Some(f) if MINDMAP_SOURCE_FORMATS.contains(&f.as_str()) => Ok(f),
+        Some(_) => Err(invalid(format!(
+            "invalid source_format (expected one of: {})",
+            MINDMAP_SOURCE_FORMATS.join(", ")
+        ))),
+        None => Ok("json".to_string()),
+    }
+}
+
+/// Parse the `graph` arg (a JSON object) into a `Graph`, defaulting to empty.
+fn parse_graph_arg(args: &Value) -> Result<Graph, ToolError> {
+    match args.get("graph") {
+        Some(v) if !v.is_null() => {
+            serde_json::from_value(v.clone()).map_err(|e| invalid(format!("invalid graph: {e}")))
+        }
+        _ => Ok(Graph::default()),
+    }
+}
+
+async fn mindmaps_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let folder = opt_trimmed(args, "folder_id");
+    let project = opt_trimmed(args, "project_id");
+    let tag = opt_trimmed(args, "tag");
+    let q = opt_trimmed(args, "q");
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+    let rows = mindmap_repo::list_mindmaps(
+        &state.db,
+        owner,
+        folder.as_deref(),
+        project.as_deref(),
+        tag.as_deref(),
+        None,
+        q.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let dtos: Vec<MindmapSummary> = rows.into_iter().map(Into::into).collect();
+    Ok(json!({ "mindmaps": dtos }))
+}
+
+async fn mindmaps_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let row = mindmap_repo::get_mindmap(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(MindmapDto::from(row)))
+}
+
+async fn mindmaps_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let title = clean_title(&req_str(args, "title")?)?;
+    // An `outline` (Markdown) seeds the graph; otherwise a JSON `graph` is used.
+    let (graph, source_format) = match opt_str(args, "outline") {
+        Some(outline) if !outline.trim().is_empty() => {
+            (from_markdown_outline(&outline), "markdown".to_string())
+        }
+        _ => (parse_graph_arg(args)?, clean_mindmap_format(args)?),
+    };
+    let folder_id = resolve_folder_arg(state, owner, args).await?;
+    let project_id = resolve_project_arg(state, owner, args).await?;
+    let tags = clean_tags(opt_str_array(args, "tags").unwrap_or_default())?;
+    let review = clean_review(args)?;
+    let row = mindmap_repo::create_mindmap(
+        db,
+        owner,
+        &title,
+        &graph,
+        &source_format,
+        folder_id.as_deref(),
+        project_id.as_deref(),
+        &tags,
+        &review,
+    )
+    .await?;
+    Ok(json!(MindmapDto::from(row)))
+}
+
+async fn mindmaps_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let id = req_str(args, "id")?;
+    mindmap_repo::get_mindmap(db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+
+    let title = match opt_str(args, "title") {
+        Some(t) => Some(clean_title(&t)?),
+        None => None,
+    };
+    // outline (Markdown) wins over an explicit graph for the body.
+    let (graph, source_format): (Option<Graph>, Option<String>) = match opt_str(args, "outline") {
+        Some(o) if !o.trim().is_empty() => (
+            Some(from_markdown_outline(&o)),
+            Some("markdown".to_string()),
+        ),
+        _ => match args.get("graph") {
+            Some(v) if !v.is_null() => (Some(parse_graph_arg(args)?), None),
+            _ => (None, None),
+        },
+    };
+    let review = opt_review(args)?;
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => Some(clean_tags(t)?),
+        None => None,
+    };
+    let folder_arg = opt_trimmed(args, "folder_id");
+    if let Some(f) = folder_arg.as_deref() {
+        files_repo::get_folder(db, owner, f)
+            .await?
+            .ok_or_else(|| invalid("folder_id does not match an existing folder"))?;
+    }
+    let project_arg = opt_trimmed(args, "project_id");
+    if let Some(p) = project_arg.as_deref() {
+        if kn::get_project(db, owner, p).await?.is_none() {
+            return Err(invalid("project_id does not match an existing project"));
+        }
+    }
+
+    let patch = MindmapPatch {
+        title: title.as_deref(),
+        graph: graph.as_ref(),
+        source_format: source_format.as_deref(),
+        review: review.as_deref(),
+        folder_id: folder_arg.as_deref().map(Some),
+        project_id: project_arg.as_deref().map(Some),
+        tags: tags.as_deref(),
+    };
+    let updated = mindmap_repo::update_mindmap(db, owner, &id, patch)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(MindmapDto::from(updated)))
+}
+
+async fn mindmaps_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    if mindmap_repo::delete_mindmap(&state.db, owner, &id).await? {
+        Ok(json!({ "deleted": true, "id": id }))
+    } else {
+        Err(not_found())
+    }
+}
+
+async fn mindmaps_from_project(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let project_id = req_str(args, "project_id")?;
+    let project = kn::get_project(db, owner, &project_id)
+        .await?
+        .ok_or_else(not_found)?;
+    let graph = mindmap_repo::seed_from_project(db, owner, &project_id).await?;
+    let title = match opt_trimmed(args, "title") {
+        Some(t) => clean_title(&t)?,
+        None => clean_title(&format!("{} — mindmap", project.name))?,
+    };
+    let review = clean_review(args)?;
+    let row = mindmap_repo::create_mindmap(
+        db,
+        owner,
+        &title,
+        &graph,
+        "json",
+        None,
+        Some(&project_id),
+        &[],
+        &review,
+    )
+    .await?;
+    Ok(json!(MindmapDto::from(row)))
+}
+
+// ── Diagrams (draw.io / mxGraph) ────────────────────────────────────────────
+
+/// A preview arg must be a `data:image/*` URI (rendered in `<img>`, never run).
+fn clean_preview_arg(args: &Value) -> Result<String, ToolError> {
+    match opt_str(args, "preview") {
+        Some(p) if p.is_empty() => Ok(p),
+        Some(p) if p.starts_with("data:image/") => {
+            if p.len() > crate::diagrams::model::MAX_PREVIEW {
+                Err(invalid("preview is too large"))
+            } else {
+                Ok(p)
+            }
+        }
+        Some(_) => Err(invalid("preview must be a data:image/* URI")),
+        None => Ok(String::new()),
+    }
+}
+
+async fn diagrams_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let folder = opt_trimmed(args, "folder_id");
+    let project = opt_trimmed(args, "project_id");
+    let tag = opt_trimmed(args, "tag");
+    let q = opt_trimmed(args, "q");
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+    let rows = diagrams_repo::list_diagrams(
+        &state.db,
+        owner,
+        folder.as_deref(),
+        project.as_deref(),
+        tag.as_deref(),
+        None,
+        q.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let dtos: Vec<DiagramSummary> = rows.into_iter().map(Into::into).collect();
+    Ok(json!({ "diagrams": dtos }))
+}
+
+async fn diagrams_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    let row = diagrams_repo::get_diagram(&state.db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(DiagramDto::from(row)))
+}
+
+async fn diagrams_create(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let title = clean_title(&req_str(args, "title")?)?;
+    let xml = opt_str(args, "xml").unwrap_or_default();
+    if xml.len() > MAX_DOC_BODY {
+        return Err(invalid("diagram is too large"));
+    }
+    let preview = clean_preview_arg(args)?;
+    let folder_id = resolve_folder_arg(state, owner, args).await?;
+    let project_id = resolve_project_arg(state, owner, args).await?;
+    let tags = clean_tags(opt_str_array(args, "tags").unwrap_or_default())?;
+    let review = clean_review(args)?;
+    let row = diagrams_repo::create_diagram(
+        db,
+        owner,
+        &title,
+        &xml,
+        &preview,
+        folder_id.as_deref(),
+        project_id.as_deref(),
+        &tags,
+        &review,
+    )
+    .await?;
+    Ok(json!(DiagramDto::from(row)))
+}
+
+async fn diagrams_update(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let db = &state.db;
+    let id = req_str(args, "id")?;
+    diagrams_repo::get_diagram(db, owner, &id)
+        .await?
+        .ok_or_else(not_found)?;
+
+    let title = match opt_str(args, "title") {
+        Some(t) => Some(clean_title(&t)?),
+        None => None,
+    };
+    let xml = match opt_str(args, "xml") {
+        Some(x) if x.len() > MAX_DOC_BODY => return Err(invalid("diagram is too large")),
+        other => other,
+    };
+    let preview = match args.get("preview") {
+        Some(_) => Some(clean_preview_arg(args)?),
+        None => None,
+    };
+    let review = opt_review(args)?;
+    let tags = match opt_str_array(args, "tags") {
+        Some(t) => Some(clean_tags(t)?),
+        None => None,
+    };
+    let folder_arg = opt_trimmed(args, "folder_id");
+    if let Some(f) = folder_arg.as_deref() {
+        files_repo::get_folder(db, owner, f)
+            .await?
+            .ok_or_else(|| invalid("folder_id does not match an existing folder"))?;
+    }
+    let project_arg = opt_trimmed(args, "project_id");
+    if let Some(p) = project_arg.as_deref() {
+        if kn::get_project(db, owner, p).await?.is_none() {
+            return Err(invalid("project_id does not match an existing project"));
+        }
+    }
+
+    let patch = DiagramPatch {
+        title: title.as_deref(),
+        xml: xml.as_deref(),
+        preview: preview.as_deref(),
+        review: review.as_deref(),
+        folder_id: folder_arg.as_deref().map(Some),
+        project_id: project_arg.as_deref().map(Some),
+        tags: tags.as_deref(),
+    };
+    let updated = diagrams_repo::update_diagram(db, owner, &id, patch)
+        .await?
+        .ok_or_else(not_found)?;
+    Ok(json!(DiagramDto::from(updated)))
+}
+
+async fn diagrams_delete(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    let id = req_str(args, "id")?;
+    if diagrams_repo::delete_diagram(&state.db, owner, &id).await? {
+        Ok(json!({ "deleted": true, "id": id }))
+    } else {
+        Err(not_found())
+    }
+}
+
 // ── Knowledge links & search ──────────────────────────────────────────────────
 
 async fn knowledge_link(state: &AppState, owner: &str, args: &Value) -> ToolResult {
@@ -940,6 +1678,11 @@ async fn knowledge_search(state: &AppState, owner: &str, args: &Value) -> ToolRe
         .min(MAX_LIMIT);
     let results = kn::search(&state.db, owner, &q, limit).await?;
     Ok(json!(results))
+}
+
+async fn knowledge_tags(state: &AppState, owner: &str) -> ToolResult {
+    let tags = kn::tag_counts(&state.db, owner).await?;
+    Ok(json!({ "tags": tags }))
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────
@@ -1031,7 +1774,7 @@ async fn documents_publish(state: &AppState, owner: &str, args: &Value) -> ToolR
     let filename = format!("{}.{}", sanitize_filename(&doc.title), target.extension());
     let file = persist_artifact(state, owner, &bytes, &filename, target.content_type()).await?;
     // Publishing approves the draft.
-    doc_repo::update_document(&state.db, owner, &id, None, None, Some("published")).await?;
+    doc_repo::update_document(&state.db, owner, &id, None, None, Some("published"), None).await?;
     Ok(json!({
         "published": true, "id": id, "title": doc.title,
         "format": target.extension(), "file": file
@@ -1099,6 +1842,10 @@ fn str_schema(desc: &str) -> Value {
 
 fn int_schema(desc: &str) -> Value {
     json!({ "type": "integer", "description": desc })
+}
+
+fn bool_schema(desc: &str) -> Value {
+    json!({ "type": "boolean", "description": desc })
 }
 
 /// The full set of tools advertised to MCP clients.
@@ -1205,6 +1952,7 @@ pub fn definitions() -> Vec<Value> {
                 "body": str_schema("HTML body"),
                 "review": str_schema("draft | published (default draft)"),
                 "project_id": str_schema("project to file this document under (optional)"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "tags" }),
             }),
             &["title"],
         ),
@@ -1217,6 +1965,7 @@ pub fn definitions() -> Vec<Value> {
                 "title": str_schema("new title"),
                 "body": str_schema("new HTML body"),
                 "review": str_schema("draft | published"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }),
             }),
             &["id"],
         ),
@@ -1271,6 +2020,18 @@ pub fn definitions() -> Vec<Value> {
                 "folder": str_schema("destination folder id; omit for the root"),
             }),
             &["name"],
+        ),
+        def(
+            "files_import",
+            "Import local files into Baitler Files server-side (no base64 needed): give an \
+             absolute path to a file or directory within an allow-listed root and Baitler reads \
+             the bytes from disk. Great for importing images/documents from a local folder.",
+            json!({
+                "path": str_schema("absolute local file or directory path (within an allowed root)"),
+                "recursive": bool_schema("when path is a directory, descend into subfolders (default true)"),
+                "folder": str_schema("destination Baitler folder id; omit for the root"),
+            }),
+            &["path"],
         ),
         def(
             "files_delete",
@@ -1377,6 +2138,209 @@ pub fn definitions() -> Vec<Value> {
             }),
             &["item_type", "item_id"],
         ),
+        // Pages (hosted web pages)
+        def(
+            "pages_list",
+            "List hosted web pages (id, title, slug, visibility, public_url, …). Optional filters.",
+            json!({
+                "folder_id": str_schema("only pages in this folder"),
+                "visibility": str_schema("draft | unlisted | public"),
+                "project_id": str_schema("only pages in this project"),
+                "q": str_schema("case-insensitive search over title and body"),
+                "limit": int_schema("max results (default 100, max 500)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "pages_get",
+            "Fetch a single page (including its sanitized HTML body and public_url) by id.",
+            json!({ "id": str_schema("page id") }),
+            &["id"],
+        ),
+        def(
+            "pages_create",
+            "Create a hosted web page from Markdown or HTML (body sanitized server-side). \
+             Visibility defaults to draft (not served) so an agent's page is never \
+             self-published — call pages_publish to share it. Pass from_document to promote \
+             an existing document's HTML into a new page.",
+            json!({
+                "title": str_schema("page title (required)"),
+                "body": str_schema("page body (Markdown or HTML per source_format)"),
+                "source_format": str_schema("html | markdown (default html)"),
+                "visibility": str_schema("draft | unlisted | public (default draft)"),
+                "folder_id": str_schema("folder to file this page under (optional)"),
+                "project_id": str_schema("project to file this page under (optional)"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "tags" }),
+                "from_document": str_schema("document id to promote into a new page (optional)"),
+            }),
+            &["title"],
+        ),
+        def(
+            "pages_update",
+            "Update a page's fields (only provided fields change). Body is re-sanitized. \
+             folder_id/project_id set membership; visibility folds in here too.",
+            json!({
+                "id": str_schema("page id (required)"),
+                "title": str_schema("new title"),
+                "body": str_schema("new body (Markdown or HTML per source_format)"),
+                "source_format": str_schema("html | markdown"),
+                "visibility": str_schema("draft | unlisted | public"),
+                "folder_id": str_schema("move into this folder"),
+                "project_id": str_schema("file under this project"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }),
+            }),
+            &["id"],
+        ),
+        def(
+            "pages_delete",
+            "Delete a page by id (its cross-type links are scrubbed).",
+            json!({ "id": str_schema("page id") }),
+            &["id"],
+        ),
+        def(
+            "pages_publish",
+            "Publish a page to a served URL and return its shareable public url. \
+             visibility unlisted (link-only, noindex) or public (indexable); defaults to public.",
+            json!({
+                "id": str_schema("page id"),
+                "visibility": str_schema("unlisted | public (default public)"),
+            }),
+            &["id"],
+        ),
+        def(
+            "pages_unpublish",
+            "Unpublish a page (→ draft); its URL immediately 404s.",
+            json!({ "id": str_schema("page id") }),
+            &["id"],
+        ),
+        // Mindmaps (visual idea maps)
+        def(
+            "mindmaps_list",
+            "List mindmaps (id, title, source_format, review, …). Optional filters.",
+            json!({
+                "folder_id": str_schema("only mindmaps in this folder"),
+                "project_id": str_schema("only mindmaps in this project"),
+                "tag": str_schema("only mindmaps carrying this tag"),
+                "q": str_schema("case-insensitive search over title and node labels"),
+                "limit": int_schema("max results (default 100, max 500)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "mindmaps_get",
+            "Fetch a single mindmap (including its parsed node/edge graph) by id.",
+            json!({ "id": str_schema("mindmap id") }),
+            &["id"],
+        ),
+        def(
+            "mindmaps_create",
+            "Create a mindmap from a JSON node/edge graph or a Markdown `outline` \
+             (headings/bullets → tree). Node labels are plain text. Agent writes default to \
+             review=draft; pass review=published to skip the queue.",
+            json!({
+                "title": str_schema("mindmap title (required)"),
+                "graph": json!({ "type": "object", "description": "{ nodes:[{id,label,parent?,x?,y?,color?,item_type?,item_id?}], edges:[{from,to,label?}] }" }),
+                "outline": str_schema("Markdown outline to seed the graph (alternative to graph)"),
+                "source_format": str_schema("json | markdown (default json)"),
+                "review": str_schema("draft | published (default draft)"),
+                "folder_id": str_schema("folder to file this mindmap under (optional)"),
+                "project_id": str_schema("project to file this mindmap under (optional)"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "tags" }),
+            }),
+            &["title"],
+        ),
+        def(
+            "mindmaps_update",
+            "Update a mindmap (only provided fields change). Supply `graph` or an `outline` to \
+             replace the body; pass review=published to approve a draft.",
+            json!({
+                "id": str_schema("mindmap id (required)"),
+                "title": str_schema("new title"),
+                "graph": json!({ "type": "object", "description": "replacement node/edge graph" }),
+                "outline": str_schema("Markdown outline to rebuild the graph from"),
+                "source_format": str_schema("json | markdown"),
+                "review": str_schema("draft | published"),
+                "folder_id": str_schema("move into this folder"),
+                "project_id": str_schema("file under this project"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }),
+            }),
+            &["id"],
+        ),
+        def(
+            "mindmaps_delete",
+            "Delete a mindmap by id (its cross-type links are scrubbed).",
+            json!({ "id": str_schema("mindmap id") }),
+            &["id"],
+        ),
+        def(
+            "mindmaps_from_project",
+            "Seed a new mindmap from a project: its ideas become nodes and their cross-links \
+             become edges, laid out radially around a central project node.",
+            json!({
+                "project_id": str_schema("project id (required)"),
+                "title": str_schema("title for the new mindmap (optional)"),
+                "review": str_schema("draft | published (default draft)"),
+            }),
+            &["project_id"],
+        ),
+        // Diagrams (draw.io / mxGraph)
+        def(
+            "diagrams_list",
+            "List draw.io diagrams (id, title, preview, review, …). Optional filters.",
+            json!({
+                "folder_id": str_schema("only diagrams in this folder"),
+                "project_id": str_schema("only diagrams in this project"),
+                "tag": str_schema("only diagrams carrying this tag"),
+                "q": str_schema("case-insensitive search over title and diagram labels"),
+                "limit": int_schema("max results (default 100, max 500)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "diagrams_get",
+            "Fetch a single diagram (including its mxGraph XML and preview) by id.",
+            json!({ "id": str_schema("diagram id") }),
+            &["id"],
+        ),
+        def(
+            "diagrams_create",
+            "Create a draw.io diagram from mxGraph `xml`, with an optional rendered `preview` \
+             (a data:image/* URI). Agent writes default to review=draft.",
+            json!({
+                "title": str_schema("diagram title (required)"),
+                "xml": str_schema("mxGraph XML body"),
+                "preview": str_schema("rendered SVG/PNG as a data:image/* URI (optional)"),
+                "review": str_schema("draft | published (default draft)"),
+                "folder_id": str_schema("folder to file this diagram under (optional)"),
+                "project_id": str_schema("project to file this diagram under (optional)"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "tags" }),
+            }),
+            &["title"],
+        ),
+        def(
+            "diagrams_update",
+            "Update a diagram (only provided fields change). Pass review=published to approve a draft.",
+            json!({
+                "id": str_schema("diagram id (required)"),
+                "title": str_schema("new title"),
+                "xml": str_schema("new mxGraph XML body"),
+                "preview": str_schema("new preview data:image/* URI"),
+                "review": str_schema("draft | published"),
+                "folder_id": str_schema("move into this folder"),
+                "project_id": str_schema("file under this project"),
+                "tags": json!({ "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }),
+            }),
+            &["id"],
+        ),
+        def(
+            "diagrams_delete",
+            "Delete a diagram by id (its cross-type links are scrubbed).",
+            json!({ "id": str_schema("diagram id") }),
+            &["id"],
+        ),
         // Knowledge graph + search
         def(
             "knowledge_link",
@@ -1412,7 +2376,7 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "knowledge_search",
-            "Full-text search across ideas, documents, projects, and files. Returns typed, \
+            "Full-text search across ideas, documents, projects, files, and pages. Returns typed, \
              ranked sections with highlighted snippets — the agent's entry point for \
              answering questions from the knowledge base.",
             json!({
@@ -1420,6 +2384,13 @@ pub fn definitions() -> Vec<Value> {
                 "limit": int_schema("max hits per type (default 100, max 500)"),
             }),
             &["q"],
+        ),
+        def(
+            "knowledge_tags",
+            "List the cross-type tag taxonomy — every distinct tag across ideas, documents, and \
+             pages with how many items carry it (use a tag with the list tools to browse).",
+            json!({}),
+            &[],
         ),
         // Publishing & export
         def(
@@ -1505,6 +2476,7 @@ mod tests {
             "files_get",
             "files_read",
             "files_write",
+            "files_import",
             "files_delete",
             "folders_create",
             "projects_list",
@@ -1514,10 +2486,29 @@ mod tests {
             "projects_delete",
             "projects_add_item",
             "projects_remove_item",
+            "pages_list",
+            "pages_get",
+            "pages_create",
+            "pages_update",
+            "pages_delete",
+            "pages_publish",
+            "pages_unpublish",
+            "mindmaps_list",
+            "mindmaps_get",
+            "mindmaps_create",
+            "mindmaps_update",
+            "mindmaps_delete",
+            "mindmaps_from_project",
+            "diagrams_list",
+            "diagrams_get",
+            "diagrams_create",
+            "diagrams_update",
+            "diagrams_delete",
             "knowledge_link",
             "knowledge_unlink",
             "knowledge_backlinks",
             "knowledge_search",
+            "knowledge_tags",
             "documents_publish",
             "collection_export",
             "activity_list",

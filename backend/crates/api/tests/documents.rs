@@ -5,7 +5,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use baitler_api::config::{Config, McpConfig, StorageConfig, SurrealConfig};
+use baitler_api::config::{CliConfig, Config, McpConfig, StorageConfig, SurrealConfig};
 use baitler_api::{documents::repo, AppState};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -35,6 +35,8 @@ fn test_config() -> Config {
             enabled: true,
             auth_token: None,
         },
+        cli: CliConfig::default(),
+        public_page_origin: None,
         secret_key: [7u8; 32],
     }
 }
@@ -61,6 +63,75 @@ async fn create(client: &Client, base: &str, payload: Value) -> Value {
         .expect("create");
     assert_eq!(resp.status(), 201);
     resp.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn tags_round_trip_filter_and_taxonomy() {
+    let (base, _state) = spawn().await;
+    let client = Client::new();
+
+    // Tags normalize on write (trim + dedupe), and a tags-only PATCH must NOT
+    // bump version.
+    let a = create(
+        &client,
+        &base,
+        json!({ "title": "Alpha", "body": "<p>a</p>", "tags": [" work ", "work", "q3"] }),
+    )
+    .await;
+    assert_eq!(a["tags"], json!(["work", "q3"]));
+    let v0 = a["version"].as_i64().unwrap();
+    let id = a["id"].as_str().unwrap();
+
+    create(
+        &client,
+        &base,
+        json!({ "title": "Beta", "body": "<p>b</p>", "tags": ["personal"] }),
+    )
+    .await;
+
+    // Filter the list by tag.
+    let only_work: Value = client
+        .get(format!("{base}/documents?tag=work"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(only_work["documents"].as_array().unwrap().len(), 1);
+    assert_eq!(only_work["documents"][0]["title"], "Alpha");
+
+    // A tags-only edit doesn't bump the version.
+    let patched: Value = client
+        .patch(format!("{base}/documents/{id}"))
+        .json(&json!({ "tags": ["work", "urgent"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        patched["version"].as_i64().unwrap(),
+        v0,
+        "tags don't bump version"
+    );
+    assert_eq!(patched["tags"], json!(["work", "urgent"]));
+
+    // The cross-type taxonomy aggregates with counts (work now on 1 doc).
+    let tax: Value = client
+        .get(format!("{base}/tags"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tags = tax["tags"].as_array().unwrap();
+    let names: Vec<&str> = tags.iter().filter_map(|t| t["tag"].as_str()).collect();
+    assert!(names.contains(&"work"));
+    assert!(names.contains(&"urgent"));
+    assert!(names.contains(&"personal"));
 }
 
 #[tokio::test]
@@ -208,14 +279,14 @@ async fn documents_are_owner_scoped() {
     let (_base, state) = spawn().await;
     let db = &state.db;
 
-    let alice = repo::create_document(db, "alice", "A", "<p>a</p>", "published", None)
+    let alice = repo::create_document(db, "alice", "A", "<p>a</p>", "published", None, &[])
         .await
         .unwrap();
-    repo::create_document(db, "bob", "B", "<p>b</p>", "published", None)
+    repo::create_document(db, "bob", "B", "<p>b</p>", "published", None, &[])
         .await
         .unwrap();
 
-    let alice_docs = repo::list_documents(db, "alice").await.unwrap();
+    let alice_docs = repo::list_documents(db, "alice", None).await.unwrap();
     assert_eq!(alice_docs.len(), 1);
     assert_eq!(alice_docs[0].uuid, alice.uuid);
     assert!(repo::get_document(db, "bob", &alice.uuid)

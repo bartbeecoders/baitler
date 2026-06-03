@@ -58,6 +58,13 @@ pub struct Config {
     pub storage: StorageConfig,
     /// Model Context Protocol (MCP) server settings.
     pub mcp: McpConfig,
+    /// Claude Code CLI runner settings (Phase 13).
+    pub cli: CliConfig,
+    /// Absolute origin that public pages (`GET /p/{slug}`, Phase 12) are served
+    /// from, used to build absolute share URLs. `None` → share URLs stay
+    /// origin-relative. For real isolation this MUST differ from the app/cookie
+    /// origin; Phase 2 must never set an auth cookie on it.
+    pub public_page_origin: Option<String>,
     /// 32-byte key for encrypting secrets at rest (derived from the app secret).
     pub secret_key: [u8; 32],
 }
@@ -71,6 +78,97 @@ pub struct McpConfig {
     /// `Authorization: Bearer <token>`; when unset, the endpoint is open (rely
     /// on a localhost bind / network controls instead).
     pub auth_token: Option<String>,
+}
+
+/// Settings for the Claude Code CLI runner (`/cli/runs`, Phase 13).
+///
+/// The runner spawns the `claude` CLI headless and points it back at Baitler's
+/// own `/mcp`. It is **off by default** because it executes a powerful agent;
+/// when enabled, host tools are disallowed unless explicitly opted in, and the
+/// real binary needs network egress + an Anthropic key (absent in CI, where the
+/// `mock` runner — selected by `bin == "mock"` — is the tested path).
+#[derive(Clone)]
+pub struct CliConfig {
+    /// Whether `/cli/runs` is usable at all. When false, the endpoints 503.
+    pub enabled: bool,
+    /// Executable to spawn. The sentinel `"mock"` selects the in-process
+    /// `MockRunner` (no subprocess, no egress) — used by tests and offline dev.
+    pub bin: String,
+    /// Root directory under which each run gets an ephemeral sandbox cwd.
+    pub workdir: String,
+    /// Hard wall-clock cap on a single run; the child is killed past it.
+    pub timeout: Duration,
+    /// Upper bound on agent turns (`--max-turns`).
+    pub max_turns: u32,
+    /// Default model when a run doesn't specify one (`None` → let the CLI pick).
+    pub default_model: Option<String>,
+    /// When false (the default), host `Bash`/`Write`/`Edit` are disallowed and
+    /// only the Baitler MCP tools are available to the spawned agent.
+    pub allow_host_tools: bool,
+    /// Absolute host directories the user may grant a run **read-only** access to
+    /// (e.g. to import local files into Baitler). Empty (default) disables the
+    /// feature; a run's requested folder must resolve within one of these roots.
+    pub workspace_roots: Vec<String>,
+    /// URL the spawned agent's loopback MCP config points at. Defaults to this
+    /// process's own `/mcp` on loopback; overridable for split-host deploys.
+    pub mcp_loopback_url: Option<String>,
+    /// MiniMax agent provider: drives the same `claude` CLI against MiniMax's
+    /// Anthropic-compatible endpoint. `api_key` (`MINIMAX_API_KEY`, an `sk-cp-…`
+    /// subscription key) gates availability; `base_url`/`model` have defaults.
+    pub minimax_api_key: Option<String>,
+    pub minimax_base_url: String,
+    pub minimax_model: String,
+}
+
+/// Default MiniMax Anthropic-compatible endpoint + model (per MiniMax docs).
+pub const MINIMAX_DEFAULT_BASE_URL: &str = "https://api.minimax.io/anthropic";
+pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-M3";
+
+impl Default for CliConfig {
+    /// Disabled, with the `mock` runner selected so tests and offline dev never
+    /// touch a real binary or the network. `from_env` overrides these for prod.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bin: "mock".to_string(),
+            workdir: std::env::temp_dir()
+                .join("baitler-cli")
+                .to_string_lossy()
+                .into_owned(),
+            timeout: Duration::from_secs(600),
+            max_turns: 24,
+            default_model: None,
+            allow_host_tools: false,
+            workspace_roots: Vec::new(),
+            mcp_loopback_url: None,
+            minimax_api_key: None,
+            minimax_base_url: MINIMAX_DEFAULT_BASE_URL.to_string(),
+            minimax_model: MINIMAX_DEFAULT_MODEL.to_string(),
+        }
+    }
+}
+
+// Hand-written so the MiniMax subscription key (a credential) never lands in logs.
+impl fmt::Debug for CliConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CliConfig")
+            .field("enabled", &self.enabled)
+            .field("bin", &self.bin)
+            .field("workdir", &self.workdir)
+            .field("timeout", &self.timeout)
+            .field("max_turns", &self.max_turns)
+            .field("default_model", &self.default_model)
+            .field("allow_host_tools", &self.allow_host_tools)
+            .field("workspace_roots", &self.workspace_roots)
+            .field("mcp_loopback_url", &self.mcp_loopback_url)
+            .field(
+                "minimax_api_key",
+                &self.minimax_api_key.as_ref().map(|_| "***"),
+            )
+            .field("minimax_base_url", &self.minimax_base_url)
+            .field("minimax_model", &self.minimax_model)
+            .finish()
+    }
 }
 
 /// File storage settings.
@@ -193,6 +291,66 @@ impl Config {
             auth_token: non_empty(env::var("MCP_AUTH_TOKEN").ok()),
         };
 
+        // Origin for public page share URLs. Trailing slashes are trimmed so the
+        // builder can `format!("{origin}/p/{slug}")` cleanly.
+        let public_page_origin = non_empty(env::var("PUBLIC_PAGE_ORIGIN").ok())
+            .map(|o| o.trim_end_matches('/').to_string());
+
+        // Claude Code CLI runner (Phase 13). Off by default; `CLAUDE_BIN` defaults
+        // to the real `claude` executable (vs the test-only `mock` sentinel).
+        let cli_timeout_secs: u64 = match env::var("CLAUDE_CLI_TIMEOUT_SECS") {
+            Ok(raw) => raw.parse().map_err(|e| {
+                ConfigError::invalid("CLAUDE_CLI_TIMEOUT_SECS", raw, format!("{e}"))
+            })?,
+            Err(_) => 600,
+        };
+        let cli_max_turns: u32 = match env::var("CLAUDE_CLI_MAX_TURNS") {
+            Ok(raw) => raw
+                .parse()
+                .map_err(|e| ConfigError::invalid("CLAUDE_CLI_MAX_TURNS", raw, format!("{e}")))?,
+            Err(_) => 24,
+        };
+        let cli = CliConfig {
+            enabled: parse_bool(env::var("CLAUDE_CLI_ENABLED").ok(), false).map_err(|raw| {
+                ConfigError::invalid("CLAUDE_CLI_ENABLED", raw, "expected a boolean")
+            })?,
+            // Empty values (e.g. a blank line copied from .env.example) fall back
+            // to the defaults rather than becoming "" — a relative/empty workdir
+            // would break the child's sandbox path resolution.
+            bin: non_empty(env::var("CLAUDE_BIN").ok()).unwrap_or_else(|| "claude".to_string()),
+            workdir: non_empty(env::var("CLAUDE_CLI_WORKDIR").ok()).unwrap_or_else(|| {
+                std::env::temp_dir()
+                    .join("baitler-cli")
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            timeout: Duration::from_secs(cli_timeout_secs),
+            max_turns: cli_max_turns,
+            default_model: non_empty(env::var("CLAUDE_CLI_DEFAULT_MODEL").ok()),
+            allow_host_tools: parse_bool(env::var("CLAUDE_CLI_ALLOW_HOST_TOOLS").ok(), false)
+                .map_err(|raw| {
+                    ConfigError::invalid("CLAUDE_CLI_ALLOW_HOST_TOOLS", raw, "expected a boolean")
+                })?,
+            // Colon- or comma-separated absolute dirs the user may grant to a run.
+            workspace_roots: env::var("CLAUDE_CLI_WORKSPACE_ROOTS")
+                .ok()
+                .map(|s| {
+                    s.split([':', ','])
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            mcp_loopback_url: non_empty(env::var("CLAUDE_CLI_MCP_URL").ok()),
+            minimax_api_key: non_empty(env::var("MINIMAX_API_KEY").ok()),
+            minimax_base_url: non_empty(env::var("MINIMAX_BASE_URL").ok())
+                .map(|u| u.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| MINIMAX_DEFAULT_BASE_URL.to_string()),
+            minimax_model: non_empty(env::var("MINIMAX_MODEL").ok())
+                .unwrap_or_else(|| MINIMAX_DEFAULT_MODEL.to_string()),
+        };
+
         // Key for encrypting stored secrets (e.g. LLM API keys). A dev default
         // keeps the app runnable, but it must be set in production.
         let app_secret = match non_empty(env::var("APP_SECRET").ok()) {
@@ -214,6 +372,8 @@ impl Config {
             surreal,
             storage,
             mcp,
+            cli,
+            public_page_origin,
             secret_key,
         })
     }
@@ -291,6 +451,8 @@ impl fmt::Debug for Config {
             .field("surreal", &self.surreal)
             .field("storage", &self.storage)
             .field("mcp", &self.mcp)
+            .field("cli", &self.cli)
+            .field("public_page_origin", &self.public_page_origin)
             .field("secret_key", &"***")
             .finish()
     }

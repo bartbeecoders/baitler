@@ -1,8 +1,12 @@
-import { Suspense, useEffect, useRef, useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Suspense, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
 
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Spinner } from '@/components/ui/spinner';
+import { AgentDock } from '@/features/cli/AgentDock';
+import { cn } from '@/lib/cn';
+import { useAgentDock } from '@/stores/agentDock';
+import { isVisualEditorDetailRoute } from '@/features/objects/editorLayout';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 
@@ -18,6 +22,14 @@ export function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const drawerRef = useRef<HTMLElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+
+  // The docked agent pane shows on every feature page (the standalone `/agent`
+  // route already *is* the panel, so don't double it up there).
+  const dockOpen = useAgentDock((s) => s.open);
+  const dockWidth = useAgentDock((s) => s.width);
+  const { pathname } = useLocation();
+  const showDock = dockOpen && pathname !== '/agent';
+  const immersive = isVisualEditorDetailRoute(pathname);
 
   const openDrawer = () => {
     triggerRef.current = document.activeElement as HTMLElement | null;
@@ -62,7 +74,10 @@ export function AppLayout() {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-svh bg-background">
+    <div
+      className="min-h-svh bg-background"
+      style={{ '--agent-dock-w': `${showDock ? dockWidth : 0}px` } as CSSProperties}
+    >
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:shadow"
@@ -71,7 +86,7 @@ export function AppLayout() {
       </a>
 
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-border bg-card md:block">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-border bg-card md:block">
         <Sidebar />
       </aside>
 
@@ -91,16 +106,31 @@ export function AppLayout() {
           />
           <aside
             ref={drawerRef}
-            className="absolute inset-y-0 left-0 w-64 border-r border-border bg-card"
+            className="absolute inset-y-0 left-0 w-72 border-r border-border bg-card"
           >
             <Sidebar onNavigate={closeDrawer} />
           </aside>
         </div>
       )}
 
-      <div className="md:pl-64">
+      <div
+        className={cn(
+          'md:pl-72',
+          showDock && 'lg:[padding-right:var(--agent-dock-w)]',
+          immersive && 'flex h-svh flex-col',
+        )}
+      >
         <Header onMenuClick={openDrawer} />
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+        <main
+          id="main"
+          tabIndex={-1}
+          className={cn(
+            'w-full',
+            immersive
+              ? 'flex min-h-0 flex-1 flex-col px-2 py-2 sm:px-3'
+              : 'mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8',
+          )}
+        >
           <ErrorBoundary>
             <Suspense
               fallback={
@@ -109,11 +139,15 @@ export function AppLayout() {
                 </div>
               }
             >
-              <Outlet />
+              <div className={immersive ? 'flex min-h-0 flex-1 flex-col' : undefined}>
+                <Outlet />
+              </div>
             </Suspense>
           </ErrorBoundary>
         </main>
       </div>
+
+      {showDock && <AgentDock />}
     </div>
   );
 }
