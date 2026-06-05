@@ -723,6 +723,24 @@ Architecture: everything is purely additive — no existing table is rewritten. 
 
 ---
 
+## Phase 15 — Superpage (composed knowledge canvas)
+
+Goal: one **Superpage** is a first-class object where the user (and agents) arrange **blocks** that reference existing Baitler content — ideas, documents, pages, mindmaps, diagrams, files — plus local notes/headings, on a single full-pane canvas. It is the “everything I’m working on right now” surface: not a replacement for projects (organize) or pages (publish a narrative), but a **composition layer** with a single agent context bundle.
+
+Vision: “Put what matters on one board.” A Superpage body is JSON `{ layout, blocks[] }` stored like a mindmap graph — document-shaped metadata (owner/title/folder/project/tags/review/version) with structure in the body, reusing folders, projects, `kn_link`, `knowledge_search`, review, activity, and MCP with no bespoke schema. Agents call `superpages_context` to fetch the layout plus **resolved** embed payloads in one shot instead of many `*_get` calls.
+
+Architecture (additive): new `superpage` table (migration `0016`). Block kinds in MVP: **`embed`** (`item_type` + `item_id`, validated owner-owned), **`note`** (Markdown/plain text), **`heading`**. Caps: ≤50 blocks, layout coords optional (`x`/`y`/`w`/`h`). Embed types: `idea|document|file|page|mindmap|diagram` (not `project`/`superpage` in v1). Security: embed **previews** in the UI use the same rules as elsewhere — diagrams as static preview image, pages via sandboxed iframe or hardened snippet, ideas/docs as sanitized/plain text; never raw draw.io XML in the app origin.
+
+- [x] **15.1** Migration `0016_superpages.surql`: `superpage` table mirroring `mindmap` (minus `source_format`; plus `blocks` JSON string + derived `search_text` from title + block notes/headings/embed titles).
+- [x] **15.2** `superpage/` module (`mod/model/repo/routes/context`): owner-scoped CRUD; block validation; `kn_link` scrub on delete; `from_project` seeds a grid of embed blocks from project members; `GET /superpages/{id}/context` (and MCP `superpages_context`) resolves embeds with size caps.
+- [x] **15.3** Fold `superpage` into `ITEM_TYPES`/`MEMBER_TYPES`, `project_members`/`member_counts`, and `knowledge_search` (typed section). MCP: `superpages_{list,get,create,update,delete,context,from_project}` + activity arms; drift guard updated in the same commit.
+- [x] **15.4** Frontend: Objects → **Superpages** (`/superpages`, `/superpages/:id`); lazy `SuperpagesPage` with a grid canvas (add embed/note/heading, open-in-tab, autosave blocks). Immersive layout like mindmaps/diagrams on detail routes.
+- [x] **15.5 (tests-with-features)** Backend integration tests (CRUD, validation, from_project, context resolver); frontend vitest smoke still TODO.
+
+> **Branch:** `feature/superpage`. **Deferred:** public publish route for superpages; live embed refresh vs snapshot pins; `superpage`↔`superpage` embed; AI panel blocks; extending `review_list` to superpage drafts.
+
+---
+
 ## Cross-cutting (apply continuously)
 
 - **Typed API contract**: generate OpenAPI from the Rust API; derive frontend types so client and server never drift.
@@ -771,3 +789,5 @@ begin once Phase 11 merges; Milestones A–C ship against the `DEV_OWNER` stub w
 Phase 4/7/11/12 wholesale (and Phase 13 for agent tools), so it can begin once Phase 11/12 merge. Its three milestones
 (A tags, B mindmaps, C draw.io) are independent and ship against the `DEV_OWNER` stub; draw.io should be self-hosted
 (`DRAWIO_URL`) for privacy, with the hosted embed as the zero-config default.
+ **Phase 15 (Superpage)** builds on Phase 4/11/14 (folders, projects, all embeddable object types, MCP conventions);
+ship on branch `feature/superpage` against the `DEV_OWNER` stub. Multi-user and public superpage URLs wait on Phase 2.

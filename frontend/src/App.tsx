@@ -36,6 +36,9 @@ const MindmapsPage = lazy(() =>
 const DiagramsPage = lazy(() =>
   import('@/features/diagrams/DiagramsPage').then((m) => ({ default: m.DiagramsPage })),
 );
+const SuperpagesPage = lazy(() =>
+  import('@/features/superpages/SuperpagesPage').then((m) => ({ default: m.SuperpagesPage })),
+);
 
 /** Non-object feature routes that have a real implementation (others → placeholder). */
 const FEATURE_PAGES: Record<string, ReactNode> = {
@@ -56,6 +59,7 @@ const OBJECT_ELEMENTS: Record<string, ReactNode> = {
   '/pages': <PagesPage />,
   '/mindmaps': <MindmapsPage />,
   '/diagrams': <DiagramsPage />,
+  '/superpages': <SuperpagesPage />,
 };
 
 function App() {

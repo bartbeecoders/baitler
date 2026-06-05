@@ -19,7 +19,10 @@ use crate::llm::ChatRequest;
 use crate::owner::CurrentOwner;
 use crate::state::AppState;
 
-use super::model::{ChatBody, KeysResponse, ProviderDto, ProvidersResponse, SetKeyBody};
+use super::image;
+use super::model::{
+    ChatBody, ImageBody, ImageResponse, KeysResponse, ProviderDto, ProvidersResponse, SetKeyBody,
+};
 use super::repo;
 
 const MAX_KEY_LEN: usize = 500;
@@ -34,6 +37,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::put(set_key).delete(delete_key),
         )
         .route("/ai/chat", post(chat))
+        .route("/ai/image", post(generate_image))
 }
 
 async fn providers(
@@ -167,6 +171,35 @@ async fn chat(
     };
 
     Ok(Sse::new(sse).keep_alive(KeepAlive::default()))
+}
+
+/// Generate an image for a canvas "image" part. Only the offline `mock`
+/// provider is wired today; real providers slot in behind a stored key.
+async fn generate_image(
+    State(_state): State<AppState>,
+    CurrentOwner(_owner): CurrentOwner,
+    Json(body): Json<ImageBody>,
+) -> AppResult<Json<ImageResponse>> {
+    let prompt = body.prompt.trim();
+    if prompt.is_empty() {
+        return Err(AppError::BadRequest("prompt must not be empty".into()));
+    }
+    if prompt.chars().count() > image::MAX_PROMPT {
+        return Err(AppError::BadRequest("prompt is too long".into()));
+    }
+    match body.provider.as_deref().unwrap_or("mock") {
+        "mock" => {
+            let img = image::generate_mock(prompt);
+            Ok(Json(ImageResponse {
+                data_url: img.data_url,
+                mime: img.mime,
+                provider: img.provider,
+            }))
+        }
+        other => Err(AppError::BadRequest(format!(
+            "image generation for `{other}` is not configured yet"
+        ))),
+    }
 }
 
 /// Fold optional grounding context into the system prompt.

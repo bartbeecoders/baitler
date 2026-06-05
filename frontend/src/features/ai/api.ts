@@ -43,6 +43,8 @@ export interface ChatStreamRequest {
   provider: string;
   model: string;
   messages: ChatMessage[];
+  /** Optional system prompt (forwarded to `POST /ai/chat`). */
+  system?: string;
   context?: string;
 }
 

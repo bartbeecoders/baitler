@@ -5,7 +5,14 @@ import { ChevronDown, ChevronRight, Boxes } from 'lucide-react';
 import { OBJECT_TYPES } from '@/config/objects';
 import { cn } from '@/lib/cn';
 import { useObjectsNav } from '@/stores/objectsNav';
-import { DiagramsList, DocumentsList, IdeasList, MindmapsList, PagesList } from './adapters';
+import {
+  DiagramsList,
+  DocumentsList,
+  IdeasList,
+  MindmapsList,
+  PagesList,
+  SuperpagesList,
+} from './adapters';
 
 /** Adapter component per object-type key (mounted lazily when a section expands). */
 const OBJECT_LIST_COMPONENTS: Record<string, () => React.JSX.Element> = {
@@ -14,6 +21,7 @@ const OBJECT_LIST_COMPONENTS: Record<string, () => React.JSX.Element> = {
   pages: PagesList,
   mindmaps: MindmapsList,
   diagrams: DiagramsList,
+  superpages: SuperpagesList,
 };
 
 /**

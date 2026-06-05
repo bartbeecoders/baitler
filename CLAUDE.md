@@ -84,7 +84,7 @@ serves MCP over **Streamable HTTP** at `POST /mcp` (in-process, reusing the same
 repos/DB — JSON-RPC 2.0, JSON-response variant, `GET`/`DELETE`→405). A second binary
 `baitler-mcp` (`src/bin/mcp_stdio.rs`) is a **stdio↔HTTP bridge** for clients that only
 launch stdio servers; it forwards to a running server's `/mcp` and never opens the DB
-(no RocksDB lock conflict). **58 tools** cover ideas/documents/files/folders/pages/mindmaps/diagrams/ai/export/health
+(no RocksDB lock conflict). **70 tools** cover ideas/documents/files/folders/pages/mindmaps/diagrams/superpages/ai/export/health/review/cli-agent
 plus the **Phase 11 knowledge layer** (`src/knowledge/`): `project` groupings (membership via
 each item's `project_id`), a symmetric `kn_link` cross-type graph, BM25 full-text
 `knowledge_search` (analyzer + per-field SEARCH indexes, migrations 0007/0008), and an

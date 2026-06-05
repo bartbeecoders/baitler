@@ -17,6 +17,7 @@ import {
 } from '@/features/pages/api';
 import { useCreateMindmap, useDeleteMindmap, useFolders as useMindmapFolders, useMindmaps } from '@/features/mindmaps/api';
 import { useCreateDiagram, useDeleteDiagram, useDiagrams, useFolders as useDiagramFolders } from '@/features/diagrams/api';
+import { useCreateSuperpage, useDeleteSuperpage, useSuperpages } from '@/features/superpages/api';
 import { VISIBILITIES } from '@/features/pages/types';
 import { ObjectList, type ObjectListItem } from './ObjectList';
 
@@ -342,6 +343,55 @@ export function DiagramsList() {
       onDelete={(id) => remove.mutate(id, { onSuccess: () => active === id && nav('/diagrams') })}
       deleting={remove.isPending}
       onRefresh={() => qc.invalidateQueries({ queryKey: ['diagrams'] })}
+    />
+  );
+}
+
+// ── Superpages ────────────────────────────────────────────────────────────────
+
+export function SuperpagesList() {
+  const nav = useNavigate();
+  const qc = useQueryClient();
+  const active = useActiveId('/superpages');
+  const [search, setSearch] = useState('');
+  const q = useDebounced(search.trim());
+  const { data: superpages = [], isLoading, isError } = useSuperpages({ q: q || undefined });
+  const create = useCreateSuperpage();
+  const remove = useDeleteSuperpage();
+
+  const items: ObjectListItem[] = superpages.map((s) => ({
+    id: s.id,
+    title: s.title,
+    badge:
+      s.review === 'draft'
+        ? { label: 'Draft', variant: 'warning' }
+        : s.block_count > 0
+          ? { label: `${s.block_count} blocks`, variant: 'default' }
+          : undefined,
+  }));
+
+  return (
+    <ObjectList
+      noun="superpage"
+      items={items}
+      isLoading={isLoading}
+      isError={isError}
+      activeId={active}
+      search={search}
+      onSearch={setSearch}
+      onSelect={(id) => nav(`/superpages/${id}`)}
+      onCreate={() =>
+        create.mutate(
+          { title: 'Untitled superpage', blocks: { layout: 'grid', blocks: [] } },
+          { onSuccess: (s) => nav(`/superpages/${s.id}`) },
+        )
+      }
+      creating={create.isPending}
+      onDelete={(id) =>
+        remove.mutate(id, { onSuccess: () => active === id && nav('/superpages') })
+      }
+      deleting={remove.isPending}
+      onRefresh={() => qc.invalidateQueries({ queryKey: ['superpages'] })}
     />
   );
 }

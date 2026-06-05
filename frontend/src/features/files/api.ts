@@ -22,13 +22,15 @@ export function fetchContent(id: string): Promise<Blob> {
 }
 
 /** Download a file by streaming its bytes to a transient object URL. */
-export async function downloadContent(id: string, name: string): Promise<void> {
+export async function downloadContent(id: string, name?: string): Promise<void> {
   const blob = await fetchContent(id);
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement('a');
     a.href = url;
-    a.download = name;
+    // Only force a filename when we actually know it — otherwise let the browser
+    // keep the original name rather than renaming everything to a placeholder.
+    if (name) a.download = name;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -39,7 +41,7 @@ export async function downloadContent(id: string, name: string): Promise<void> {
 
 export function useDownload() {
   return useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) => downloadContent(id, name),
+    mutationFn: ({ id, name }: { id: string; name?: string }) => downloadContent(id, name),
   });
 }
 

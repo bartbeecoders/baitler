@@ -29,6 +29,7 @@ pub mod routes;
 pub mod slug;
 pub mod state;
 pub mod storage;
+pub mod superpage;
 pub mod tags;
 pub mod telemetry;
 
