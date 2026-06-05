@@ -7,7 +7,8 @@ use crate::error::{AppError, AppResult};
 use crate::knowledge::repo as kn;
 
 use super::model::{
-    derive_search_text, layout_from_member_embeds, validate_layout, Layout, SuperpageRow,
+    derive_search_text, layout_from_member_embeds, normalize_refs, referenced, validate_layout,
+    Layout, SuperpageRow,
 };
 
 const SUPERPAGE_SELECT: &str = "SELECT uuid, owner, title, blocks, folder_id, \
@@ -19,40 +20,41 @@ fn vanished() -> AppError {
     AppError::Internal("superpage not found immediately after write".into())
 }
 
-/// Collect embed titles for search_text (best-effort).
-async fn embed_titles(db: &Db, owner: &str, layout: &Layout) -> AppResult<Vec<String>> {
+/// Collect referenced-item titles for search_text (best-effort).
+async fn collect_ref_titles(db: &Db, owner: &str, layout: &Layout) -> AppResult<Vec<String>> {
     let mut titles = Vec::new();
     for block in &layout.blocks {
-        if block.kind != "embed" {
-            continue;
-        }
-        let (Some(it), Some(id)) = (&block.item_type, &block.item_id) else {
-            continue;
-        };
-        if let Some(t) = kn::resolve_title(db, owner, it, id).await? {
-            titles.push(t);
+        if let Some((it, id)) = referenced(block) {
+            if let Some(t) = kn::resolve_title(db, owner, it, id).await? {
+                titles.push(t);
+            }
         }
     }
     Ok(titles)
 }
 
-async fn prepare_layout(db: &Db, owner: &str, title: &str, layout: &Layout) -> AppResult<(String, String)> {
+async fn prepare_layout(
+    db: &Db,
+    owner: &str,
+    title: &str,
+    layout: &Layout,
+) -> AppResult<(String, String)> {
+    // Trim referencing ids/types once so the stored, existence-checked, and
+    // later-resolved ids are byte-identical.
+    let normalized = normalize_refs(layout);
+    let layout = &normalized;
     validate_layout(layout).map_err(AppError::BadRequest)?;
     for block in &layout.blocks {
-        if block.kind != "embed" {
-            continue;
-        }
-        let (Some(it), Some(id)) = (&block.item_type, &block.item_id) else {
-            continue;
-        };
-        if !kn::item_exists(db, owner, it, id).await? {
-            return Err(AppError::BadRequest(format!(
-                "embed references a missing {it} `{id}`"
-            )));
+        if let Some((it, id)) = referenced(block) {
+            if !kn::item_exists(db, owner, it, id).await? {
+                return Err(AppError::BadRequest(format!(
+                    "part references a missing {it} `{id}`"
+                )));
+            }
         }
     }
-    let embed_titles: Vec<String> = embed_titles(db, owner, layout).await?;
-    let refs: Vec<&str> = embed_titles.iter().map(String::as_str).collect();
+    let ref_titles: Vec<String> = collect_ref_titles(db, owner, layout).await?;
+    let refs: Vec<&str> = ref_titles.iter().map(String::as_str).collect();
     let search_text = derive_search_text(title, layout, &refs);
     let json = serde_json::to_string(layout)
         .map_err(|e| AppError::Internal(format!("blocks serialize failed: {e}").into()))?;
@@ -225,14 +227,21 @@ pub async fn update_superpage(
     }
 
     let new_title = patch.title.unwrap_or(&current.title).to_string();
-    let search_text = match &prepared {
-        Some((_, st)) => st.clone(),
-        None => {
-            let layout: Layout = serde_json::from_str(&current.blocks).unwrap_or_default();
-            let embed_titles: Vec<String> = embed_titles(db, owner, &layout).await?;
-            let refs: Vec<&str> = embed_titles.iter().map(String::as_str).collect();
-            derive_search_text(&new_title, &layout, &refs)
+    let needs_search_text = patch.title.is_some() || prepared.is_some();
+    // Only recompute (which costs one resolve_title query per referenced part)
+    // when search_text will actually be written.
+    let search_text = if needs_search_text {
+        match &prepared {
+            Some((_, st)) => st.clone(),
+            None => {
+                let layout: Layout = serde_json::from_str(&current.blocks).unwrap_or_default();
+                let ref_titles: Vec<String> = collect_ref_titles(db, owner, &layout).await?;
+                let refs: Vec<&str> = ref_titles.iter().map(String::as_str).collect();
+                derive_search_text(&new_title, &layout, &refs)
+            }
         }
+    } else {
+        String::new()
     };
 
     let sql = format!(
@@ -319,11 +328,6 @@ pub async fn seed_from_project(db: &Db, owner: &str, project_id: &str) -> AppRes
         .map(|m| (m.id.clone(), m.title.clone()))
         .collect();
     Ok(layout_from_member_embeds(
-        &ideas,
-        &documents,
-        &files,
-        &pages,
-        &mindmaps,
-        &diagrams,
+        &ideas, &documents, &files, &pages, &mindmaps, &diagrams,
     ))
 }

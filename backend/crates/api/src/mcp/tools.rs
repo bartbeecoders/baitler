@@ -15,6 +15,8 @@ use uuid::Uuid;
 
 use crate::activity;
 use crate::ai::repo as ai_repo;
+use crate::cli::model::{CliRunDto, CliRunSummary};
+use crate::cli::repo as cli_repo;
 use crate::convert::{self, SourceFormat, TargetFormat};
 use crate::crypto;
 use crate::diagrams::model::{DiagramDto, DiagramSummary};
@@ -26,8 +28,6 @@ use crate::files::model::{FileDto, FolderDto};
 use crate::files::repo as files_repo;
 use crate::ideas::model::{IdeaDto, IdeaSummary, REVIEWS, STATUSES};
 use crate::ideas::repo as ideas_repo;
-use crate::cli::model::{CliRunDto, CliRunSummary};
-use crate::cli::repo as cli_repo;
 
 use crate::knowledge::model::{ProjectDto, ReviewQueue, PROJECT_STATUSES};
 use crate::knowledge::repo as kn;
@@ -39,10 +39,10 @@ use crate::mindmap::model::{
 use crate::mindmap::repo::{self as mindmap_repo, MindmapPatch};
 use crate::pages::model::{PageDto, PageSummary, SOURCE_FORMATS, VISIBILITIES};
 use crate::pages::repo::{self as pages_repo, PagePatch};
+use crate::state::AppState;
 use crate::superpage::context;
 use crate::superpage::model::{Layout, SuperpageDto, SuperpageSummary};
 use crate::superpage::repo as superpage_repo;
-use crate::state::AppState;
 
 use super::b64;
 
@@ -1691,7 +1691,8 @@ async fn superpages_list(state: &AppState, owner: &str, args: &Value) -> ToolRes
         offset,
     )
     .await?;
-    let summaries: Vec<SuperpageSummary> = rows.into_iter().map(SuperpageSummary::from_row).collect();
+    let summaries: Vec<SuperpageSummary> =
+        rows.into_iter().map(SuperpageSummary::from_row).collect();
     Ok(json!({ "superpages": summaries }))
 }
 
@@ -1895,7 +1896,10 @@ async fn cli_status(state: &AppState, owner: &str) -> ToolResult {
             ),
         )
     } else if is_mock {
-        (true, "Using the offline mock runner (CLAUDE_BIN=mock).".to_string())
+        (
+            true,
+            "Using the offline mock runner (CLAUDE_BIN=mock).".to_string(),
+        )
     } else if has_stored_key {
         (
             true,
@@ -2666,7 +2670,7 @@ pub fn definitions() -> Vec<Value> {
         // Superpages (composed canvas)
         def(
             "superpages_list",
-            "List superpages (composed boards of embeds, notes, and headings). Optional filters.",
+            "List superpages (freeform canvases of parts: text, code, image, file, webpage, mindmap, diagram). Optional filters.",
             json!({
                 "folder_id": str_schema("only superpages in this folder"),
                 "project_id": str_schema("only superpages in this project"),
@@ -2685,12 +2689,19 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "superpages_create",
-            "Create a superpage from a blocks layout. Agent writes default to review=draft.",
+            "Create a superpage (freeform canvas) from a parts layout. Agent writes default to review=draft.",
             json!({
                 "title": str_schema("superpage title (required)"),
                 "blocks": json!({
                     "type": "object",
-                    "description": "{ layout: grid, blocks: [{ id, kind: embed|note|heading, … }] }",
+                    "description": "{ layout: canvas, blocks: [{ id, kind, x, y, w, h, … }] }. \
+                        Each part has pixel geometry x/y/w/h plus kind-specific fields: \
+                        text → { markdown }; code → { text, lang }; \
+                        image → { src: upload|url|generated, item_id (upload, a file id) | url, text (caption) }; \
+                        file → { item_id (a file id) }; \
+                        webpage → { web_kind: url|page, url | item_id (a page id) }; \
+                        mindmap → { item_id (a mindmap id) }; diagram → { item_id (a diagram id) }. \
+                        Referenced items must already exist and belong to the owner.",
                 }),
                 "review": str_schema("draft | published (default draft)"),
                 "folder_id": str_schema("folder id (optional)"),
@@ -2719,8 +2730,8 @@ pub fn definitions() -> Vec<Value> {
         ),
         def(
             "superpages_context",
-            "Return a superpage layout with resolved embed payloads (titles, bodies, previews) \
-             for agent grounding in one call.",
+            "Return a superpage layout with every part resolved (inline text/code, plus titles, \
+             bodies, and previews for referenced files/pages/mindmaps/diagrams) for agent grounding in one call.",
             json!({ "id": str_schema("superpage id") }),
             &["id"],
         ),

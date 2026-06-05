@@ -126,7 +126,8 @@ fn parse_layout_value(v: Option<Value>) -> AppResult<Layout> {
             if raw.len() > MAX_BODY {
                 return Err(AppError::BadRequest("blocks payload is too large".into()));
             }
-            serde_json::from_str(&raw).map_err(|e| AppError::BadRequest(format!("invalid blocks: {e}")))
+            serde_json::from_str(&raw)
+                .map_err(|e| AppError::BadRequest(format!("invalid blocks: {e}")))
         }
         None => Ok(Layout::default()),
     }
@@ -307,10 +308,7 @@ async fn update(
         .review
         .map(|r| clean_review(Some(r), false))
         .transpose()?;
-    let tags = body
-        .tags
-        .map(tags::normalize_tags)
-        .transpose()?;
+    let tags = body.tags.map(tags::normalize_tags).transpose()?;
     let folder_arg = body.folder_id.as_ref().map(|inner| inner.as_deref());
     let project_arg = body.project_id.as_ref().map(|inner| inner.as_deref());
 
@@ -349,6 +347,11 @@ mod tests {
 
     #[test]
     fn block_kinds_are_stable() {
-        assert!(BLOCK_KINDS.contains(&"embed"));
+        // typed parts plus retained legacy kinds
+        for k in [
+            "text", "code", "image", "file", "webpage", "mindmap", "diagram", "embed",
+        ] {
+            assert!(BLOCK_KINDS.contains(&k), "missing kind {k}");
+        }
     }
 }

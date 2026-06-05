@@ -112,6 +112,43 @@ async fn mock_chat_streams_sse() {
 }
 
 #[tokio::test]
+async fn mock_image_returns_svg_data_url() {
+    let (base, _state) = spawn().await;
+    let client = Client::new();
+
+    let body: Value = client
+        .post(format!("{base}/ai/image"))
+        .json(&json!({ "prompt": "a teal robot butler" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["provider"], "mock");
+    assert_eq!(body["mime"], "image/svg+xml");
+    let data_url = body["data_url"].as_str().unwrap();
+    assert!(
+        data_url.starts_with("data:image/svg+xml,"),
+        "got {data_url}"
+    );
+}
+
+#[tokio::test]
+async fn image_rejects_empty_prompt() {
+    let (base, _state) = spawn().await;
+    let client = Client::new();
+    let r = client
+        .post(format!("{base}/ai/image"))
+        .json(&json!({ "prompt": "   " }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn key_crud_and_configured_flag() {
     let (base, _state) = spawn().await;
     let client = Client::new();

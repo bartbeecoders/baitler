@@ -314,7 +314,12 @@ pub async fn item_exists(db: &Db, owner: &str, kind: &str, id: &str) -> AppResul
 }
 
 /// Best-effort display title/name for an item (None if missing).
-pub async fn resolve_title(db: &Db, owner: &str, kind: &str, id: &str) -> AppResult<Option<String>> {
+pub async fn resolve_title(
+    db: &Db,
+    owner: &str,
+    kind: &str,
+    id: &str,
+) -> AppResult<Option<String>> {
     let table = any_table(kind)?;
     let tcol = title_col(table);
     let mut res = db

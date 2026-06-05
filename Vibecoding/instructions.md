@@ -87,3 +87,28 @@ This way we will let the agent interact with the content in the current page.
 
 What about combining documents, ideas, web pages, diagrams, mindmaps and other content into a superpage? This would allow the agent to interact with all of this content in one place.
 1 big page, where the user can place all the content they want to interact with.
+./Scc   
+
+
+## Minimalistic design
+
+We are onto something.
+Lets go back to a simple full page canvas for the agent to work on.
+Just some simple menu items to interact with the canvas:
+- add a text part
+- add a image part
+- add a code part
+- add a file part
+- add a web page part
+- add a mindmap part
+- add a diagram part
+
+AI agent should be able to interact with all of these parts. Could be a pop up pane that appears when the user clicks on a part or in the canvas.
+
+Free draggable parts on the canvas.
+Free drag and drop parts on the canvas.
+Auto save the canvas.
+
+## redesign
+
+

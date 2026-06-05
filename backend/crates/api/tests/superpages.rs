@@ -107,12 +107,7 @@ async fn superpage_crud_context_and_from_project() {
     assert_eq!(embed["kind"], "embed");
     assert_eq!(embed["title"], "Board idea");
 
-    let proj = post(
-        &c,
-        format!("{base}/projects"),
-        json!({ "name": "Sprint" }),
-    )
-    .await;
+    let proj = post(&c, format!("{base}/projects"), json!({ "name": "Sprint" })).await;
     assert_eq!(proj.status(), StatusCode::CREATED);
     let proj_id = id_of(&proj.json().await.unwrap());
 
@@ -132,6 +127,66 @@ async fn superpage_crud_context_and_from_project() {
         .await
         .unwrap();
     assert_eq!(del.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn superpage_typed_parts_resolve_in_context() {
+    let (base, _s) = spawn().await;
+    let c = Client::new();
+
+    let sp = post(
+        &c,
+        format!("{base}/superpages"),
+        json!({
+            "title": "Canvas",
+            "blocks": {
+                "layout": "canvas",
+                "blocks": [
+                    { "id": "t1", "kind": "text", "markdown": "# Hi\nsome notes", "x": 0, "y": 0, "w": 360, "h": 200 },
+                    { "id": "c1", "kind": "code", "lang": "rust", "text": "fn main() {}", "x": 0, "y": 220, "w": 360, "h": 200 },
+                    { "id": "i1", "kind": "image", "src": "url", "url": "https://example.com/a.png", "x": 380, "y": 0, "w": 360, "h": 240 },
+                    { "id": "w1", "kind": "webpage", "web_kind": "url", "url": "https://example.com", "x": 380, "y": 260, "w": 360, "h": 240 }
+                ]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(sp.status(), StatusCode::CREATED);
+    let sp_id = id_of(&sp.json().await.unwrap());
+
+    let ctx = c
+        .get(format!("{base}/superpages/{sp_id}/context"))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = ctx.json().await.unwrap();
+    let blocks = body["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 4);
+    assert_eq!(blocks[0]["kind"], "text");
+    assert_eq!(blocks[1]["kind"], "code");
+    assert_eq!(blocks[1]["lang"], "rust");
+    assert_eq!(blocks[2]["kind"], "image");
+    assert_eq!(blocks[2]["url"], "https://example.com/a.png");
+    assert_eq!(blocks[3]["kind"], "webpage");
+    assert_eq!(blocks[3]["web_kind"], "url");
+}
+
+#[tokio::test]
+async fn superpage_rejects_bad_webpage_url() {
+    let (base, _s) = spawn().await;
+    let c = Client::new();
+    let r = post(
+        &c,
+        format!("{base}/superpages"),
+        json!({
+            "title": "Bad",
+            "blocks": { "blocks": [
+                { "id": "w1", "kind": "webpage", "web_kind": "url", "url": "javascript:alert(1)" }
+            ] }
+        }),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

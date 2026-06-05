@@ -47,3 +47,23 @@ pub struct KeysResponse {
     /// Provider ids that have a stored key for this owner.
     pub configured: Vec<String>,
 }
+
+/// `POST /ai/image`
+#[derive(Debug, Deserialize)]
+pub struct ImageBody {
+    pub prompt: String,
+    /// Image provider id (default `mock`).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Hint like `512x512` (advisory; ignored by the mock provider).
+    #[serde(default)]
+    pub size: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageResponse {
+    /// A renderable `data:` URL (or remote URL) for the generated image.
+    pub data_url: String,
+    pub mime: String,
+    pub provider: String,
+}

@@ -4,11 +4,24 @@ use serde::{Deserialize, Serialize};
 
 /// Item types that can be a project member or a link endpoint.
 pub const ITEM_TYPES: &[&str] = &[
-    "idea", "document", "file", "project", "page", "mindmap", "diagram", "superpage",
+    "idea",
+    "document",
+    "file",
+    "project",
+    "page",
+    "mindmap",
+    "diagram",
+    "superpage",
 ];
 /// Types that can belong to a project (everything except project itself).
 pub const MEMBER_TYPES: &[&str] = &[
-    "idea", "document", "file", "page", "mindmap", "diagram", "superpage",
+    "idea",
+    "document",
+    "file",
+    "page",
+    "mindmap",
+    "diagram",
+    "superpage",
 ];
 /// Project lifecycle states.
 pub const PROJECT_STATUSES: &[&str] = &["active", "archived"];
