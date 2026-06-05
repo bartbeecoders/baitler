@@ -404,6 +404,179 @@ async fn cancel_endpoint_semantics() {
 }
 
 #[tokio::test]
+async fn run_report_aggregates_run_tagged_activity() {
+    let (base, _state) = spawn(true).await;
+    let c = Client::new();
+
+    // A finished mock run gives us a real run row + id.
+    let resp = post(
+        &c,
+        format!("{base}/cli/runs"),
+        json!({ "prompt": "organise" }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let _ = resp.text().await;
+    let list: Value = c
+        .get(format!("{base}/cli/runs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let run_id = list["runs"][0]["id"].as_str().unwrap().to_string();
+
+    // Simulate the run's loopback MCP write: tools/call with X-Baitler-Run.
+    let r = c
+        .post(format!("{base}/mcp"))
+        .header("X-Baitler-Agent", "claude-code")
+        .header("X-Baitler-Run", &run_id)
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {
+                "name": "ideas_create",
+                "arguments": { "title": "Summary of acme", "body": "…" }
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["result"]["isError"], false);
+
+    // The report folds that write into artifacts + counts.
+    let report: Value = c
+        .get(format!("{base}/cli/runs/{run_id}/report"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(report["run"]["id"], run_id.as_str());
+    assert_eq!(report["total"], 1);
+    assert_eq!(report["counts"]["idea.create"], 1);
+    assert_eq!(report["artifacts"][0]["target_type"], "idea");
+    assert_eq!(report["artifacts"][0]["target_title"], "Summary of acme");
+    assert_eq!(report["artifacts"][0]["run_id"], run_id.as_str());
+
+    // The activity timeline filters by run too — and another run id matches nothing.
+    let act: Value = c
+        .get(format!("{base}/activity?run_id={run_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(act["activity"].as_array().unwrap().len(), 1);
+    let none: Value = c
+        .get(format!("{base}/activity?run_id=some-other-run"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(none["activity"].as_array().unwrap().is_empty());
+
+    // Unknown run → 404.
+    let missing = c
+        .get(format!("{base}/cli/runs/nope/report"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn workspace_browse_is_scoped_to_roots() {
+    // Root with two visible subdirs, a hidden dir, and a plain file.
+    let root = std::env::temp_dir().join("baitler-cli-browse-int");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("projects")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::create_dir_all(root.join(".hidden")).unwrap();
+    std::fs::write(root.join("notes.txt"), "x").unwrap();
+
+    let mut cfg = test_config(true);
+    cfg.cli.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    let state = baitler_api::build_state(cfg).await.expect("state");
+    let app = baitler_api::build_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let c = Client::new();
+    let canon_root = std::fs::canonicalize(&root).unwrap();
+
+    // No path → the allow-listed roots themselves.
+    let top: Value = c
+        .get(format!("{base}/cli/workspace/browse"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(top["path"].is_null());
+    assert_eq!(
+        top["dirs"][0]["path"],
+        canon_root.to_string_lossy().as_ref()
+    );
+
+    // Inside the root: only visible directories, sorted; no hidden, no files.
+    let inside: Value = c
+        .get(format!(
+            "{base}/cli/workspace/browse?path={}",
+            root.to_string_lossy()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = inside["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["docs", "projects"]);
+    // The root's own parent is outside the allow-list → no "up".
+    assert!(inside["parent"].is_null());
+
+    // A subdir's parent IS offered (it's still under the root).
+    let sub: Value = c
+        .get(format!(
+            "{base}/cli/workspace/browse?path={}",
+            root.join("docs").to_string_lossy()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sub["parent"], canon_root.to_string_lossy().as_ref());
+
+    // Outside the roots → 400.
+    let bad = c
+        .get(format!(
+            "{base}/cli/workspace/browse?path={}",
+            std::env::temp_dir().to_string_lossy()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn runs_are_owner_scoped() {
     // Repo-level isolation with two synthetic owners (mirrors documents/files).
     let (_base, state) = spawn(true).await;

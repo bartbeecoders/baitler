@@ -36,26 +36,32 @@ use tools::ToolError;
 const SERVER_NAME: &str = "baitler";
 
 /// Who is making a tool call: the resource `owner` plus an optional `agent`
-/// label (from the `X-Baitler-Agent` header) used for provenance/activity.
+/// label (from the `X-Baitler-Agent` header) and originating `run_id` (from the
+/// `X-Baitler-Run` header, set by the CLI runner's loopback MCP config) used for
+/// provenance/activity.
 ///
 /// Until Phase 2 auth lands, `owner` is always [`DEV_OWNER`]; the auth phase
 /// replaces only how this is resolved, and every tool inherits per-user scoping.
 pub(crate) struct Actor {
     pub owner: String,
     pub agent: Option<String>,
+    pub run_id: Option<String>,
 }
 
-/// Resolve the calling actor from request headers. The agent label is sanitized
-/// to a short, printable token so it's safe to store and log.
+/// Resolve the calling actor from request headers. The agent label and run id
+/// are sanitized to short, printable tokens so they're safe to store and log.
 fn resolve_actor(headers: &HeaderMap) -> Actor {
-    let agent = headers
-        .get("x-baitler-agent")
-        .and_then(|v| v.to_str().ok())
-        .map(sanitize_agent)
-        .filter(|s| !s.is_empty());
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(sanitize_agent)
+            .filter(|s| !s.is_empty())
+    };
     Actor {
         owner: DEV_OWNER.to_string(),
-        agent,
+        agent: header("x-baitler-agent"),
+        run_id: header("x-baitler-run"),
     }
 }
 
@@ -252,6 +258,7 @@ async fn handle_tools_call(state: &AppState, actor: &Actor, id: Value, params: &
                     &state.db,
                     &actor.owner,
                     actor.agent.as_deref(),
+                    actor.run_id.as_deref(),
                     &entry.as_new(),
                 )
                 .await

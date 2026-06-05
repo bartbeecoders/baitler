@@ -2016,6 +2016,7 @@ async fn cli_run_cancel(state: &AppState, owner: &str, args: &Value) -> ToolResu
 async fn activity_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
     let project_id = opt_trimmed(args, "project_id");
     let agent = opt_trimmed(args, "agent");
+    let run_id = opt_trimmed(args, "run_id");
     let since = opt_trimmed(args, "since");
     let limit = opt_usize(args, "limit")
         .unwrap_or(DEFAULT_LIMIT)
@@ -2023,9 +2024,12 @@ async fn activity_list(state: &AppState, owner: &str, args: &Value) -> ToolResul
     let rows = activity::list(
         &state.db,
         owner,
-        project_id.as_deref(),
-        agent.as_deref(),
-        since.as_deref(),
+        &activity::ActivityFilter {
+            project_id: project_id.as_deref(),
+            agent: agent.as_deref(),
+            run_id: run_id.as_deref(),
+            since: since.as_deref(),
+        },
         limit,
     )
     .await?;
@@ -2825,6 +2829,7 @@ pub fn definitions() -> Vec<Value> {
             json!({
                 "project_id": str_schema("only activity for this project"),
                 "agent": str_schema("only activity by this agent label"),
+                "run_id": str_schema("only activity from this CLI run"),
                 "since": str_schema("ISO-8601 timestamp lower bound"),
                 "limit": int_schema("max results (default 100, max 500)"),
             }),

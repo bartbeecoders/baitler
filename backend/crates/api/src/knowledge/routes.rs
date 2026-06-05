@@ -231,6 +231,7 @@ async fn review_queue(
 struct ActivityQuery {
     project_id: Option<String>,
     agent: Option<String>,
+    run_id: Option<String>,
     since: Option<String>,
     limit: Option<usize>,
 }
@@ -253,14 +254,18 @@ async fn activity_timeline(
     };
     let project_id = nz(&params.project_id);
     let agent = nz(&params.agent);
+    let run_id = nz(&params.run_id);
     let since = nz(&params.since);
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
     let rows = activity::list(
         &state.db,
         &owner,
-        project_id.as_deref(),
-        agent.as_deref(),
-        since.as_deref(),
+        &activity::ActivityFilter {
+            project_id: project_id.as_deref(),
+            agent: agent.as_deref(),
+            run_id: run_id.as_deref(),
+            since: since.as_deref(),
+        },
         limit,
     )
     .await?;

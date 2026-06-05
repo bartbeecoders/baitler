@@ -124,9 +124,14 @@ impl AgentRunner for ClaudeCliRunner {
             .map_err(|e| RunError::Unavailable(format!("could not create run sandbox: {e}")))?;
         let sandbox = tokio::fs::canonicalize(&sandbox).await.unwrap_or(sandbox);
 
-        // 2. Loopback MCP config, written 0600 inside the sandbox.
+        // 2. Loopback MCP config, written 0600 inside the sandbox. Rewritten on
+        // every turn so the X-Baitler-Run header always names the CURRENT run.
         let mcp_path = sandbox.join("mcp.json");
-        let mcp_json = build_mcp_config(&self.loopback_url, self.mcp_auth_token.as_deref());
+        let mcp_json = build_mcp_config(
+            &self.loopback_url,
+            self.mcp_auth_token.as_deref(),
+            &spec.run_id,
+        );
         if let Err(e) = tokio::fs::write(&mcp_path, mcp_json.to_string()).await {
             let _ = tokio::fs::remove_dir_all(&sandbox).await;
             return Err(RunError::Unavailable(format!(
@@ -412,11 +417,17 @@ pub(crate) fn build_argv(
 }
 
 /// Build the loopback MCP config the spawned agent uses (Phase 13.3). Points at
-/// Baitler's own `/mcp`, tags every call with `X-Baitler-Agent` for attribution,
-/// and forwards the optional bearer token.
-pub(crate) fn build_mcp_config(loopback_url: &str, auth_token: Option<&str>) -> Value {
+/// Baitler's own `/mcp`, tags every call with `X-Baitler-Agent` for attribution
+/// and `X-Baitler-Run` for run↔activity correlation (the butler report), and
+/// forwards the optional bearer token.
+pub(crate) fn build_mcp_config(
+    loopback_url: &str,
+    auth_token: Option<&str>,
+    run_id: &str,
+) -> Value {
     let mut headers = serde_json::Map::new();
     headers.insert("X-Baitler-Agent".to_string(), json!(AGENT_LABEL));
+    headers.insert("X-Baitler-Run".to_string(), json!(run_id));
     if let Some(token) = auth_token {
         headers.insert(
             "Authorization".to_string(),
@@ -716,15 +727,16 @@ mod tests {
 
     #[test]
     fn mcp_config_points_at_loopback_with_attribution() {
-        let cfg = build_mcp_config("http://127.0.0.1:8080/mcp", Some("tok"));
+        let cfg = build_mcp_config("http://127.0.0.1:8080/mcp", Some("tok"), "run-42");
         let server = &cfg["mcpServers"]["baitler"];
         assert_eq!(server["type"], "http");
         assert_eq!(server["url"], "http://127.0.0.1:8080/mcp");
         assert_eq!(server["headers"]["X-Baitler-Agent"], AGENT_LABEL);
+        assert_eq!(server["headers"]["X-Baitler-Run"], "run-42");
         assert_eq!(server["headers"]["Authorization"], "Bearer tok");
 
         // No token → no Authorization header.
-        let open = build_mcp_config("http://x/mcp", None);
+        let open = build_mcp_config("http://x/mcp", None, "run-42");
         assert!(open["mcpServers"]["baitler"]["headers"]
             .get("Authorization")
             .is_none());

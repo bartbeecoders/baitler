@@ -46,13 +46,19 @@ const MAX_PROMPT_LEN: usize = 50_000;
 const MAX_CONTEXT_LEN: usize = 4_000;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+/// Cap on activity rows folded into one run report.
+const MAX_REPORT_ARTIFACTS: usize = 500;
+/// Cap on directory entries returned by the workspace browser.
+const MAX_BROWSE_ENTRIES: usize = 200;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/cli/status", get(status))
         .route("/cli/runs", get(list).post(create))
         .route("/cli/runs/{id}", get(get_one))
+        .route("/cli/runs/{id}/report", get(report))
         .route("/cli/runs/{id}/cancel", post(cancel))
+        .route("/cli/workspace/browse", get(browse))
 }
 
 /// Run-free readiness for the Agent page: composes config (`enabled`), the
@@ -249,6 +255,164 @@ async fn get_one(
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(run.into()))
+}
+
+/// What a run actually did to the knowledge base — the "butler report" behind
+/// the portal's run cards. Artifacts are the run's activity rows (provenance,
+/// newest first); `counts` groups them by action (`idea.create`, `file.import`,
+/// …) so the client can render badges without re-deriving.
+#[derive(Debug, Serialize)]
+struct RunReport {
+    run: CliRunSummary,
+    artifacts: Vec<crate::activity::ActivityDto>,
+    counts: std::collections::BTreeMap<String, usize>,
+    total: usize,
+}
+
+/// `GET /cli/runs/{id}/report` — aggregate the run's activity (matched by the
+/// `run_id` stamped on loopback MCP writes) into a report.
+async fn report(
+    State(state): State<AppState>,
+    CurrentOwner(owner): CurrentOwner,
+    Path(id): Path<String>,
+) -> AppResult<Json<RunReport>> {
+    let run = repo::get_run(&state.db, &owner, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let rows = crate::activity::list(
+        &state.db,
+        &owner,
+        &crate::activity::ActivityFilter {
+            run_id: Some(&id),
+            ..Default::default()
+        },
+        MAX_REPORT_ARTIFACTS,
+    )
+    .await?;
+    let mut counts = std::collections::BTreeMap::new();
+    for row in &rows {
+        *counts.entry(row.action.clone()).or_insert(0) += 1;
+    }
+    let total = rows.len();
+    Ok(Json(RunReport {
+        run: run.into(),
+        artifacts: rows.into_iter().map(Into::into).collect(),
+        counts,
+        total,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowseQuery {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BrowseEntry {
+    name: String,
+    path: String,
+}
+
+/// `GET /cli/workspace/browse` — the folder picker behind "point the butler at a
+/// local folder". Without `path`, lists the allow-listed roots; with one, lists
+/// its subdirectories. Every path is validated through the same
+/// canonicalize-under-roots check as a workspace grant, so the picker can never
+/// see outside `CLAUDE_CLI_WORKSPACE_ROOTS`.
+#[derive(Debug, Serialize)]
+struct BrowseResponse {
+    roots: Vec<String>,
+    /// Canonical path being listed (`None` ⇒ the roots themselves).
+    path: Option<String>,
+    /// Canonical parent, present only while it is still under an allowed root.
+    parent: Option<String>,
+    dirs: Vec<BrowseEntry>,
+    truncated: bool,
+}
+
+async fn browse(
+    State(state): State<AppState>,
+    CurrentOwner(_owner): CurrentOwner,
+    Query(q): Query<BrowseQuery>,
+) -> AppResult<Json<BrowseResponse>> {
+    let roots = &state.config.cli.workspace_roots;
+    // Canonical, existing roots only (a stale entry just disappears from the UI).
+    let canon_roots: Vec<String> = roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .filter(|p| p.is_dir())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let requested = q.path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let Some(path) = requested else {
+        // Top level: the grantable roots, presented as entries.
+        let dirs = canon_roots
+            .iter()
+            .map(|p| BrowseEntry {
+                name: std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.clone()),
+                path: p.clone(),
+            })
+            .collect();
+        return Ok(Json(BrowseResponse {
+            roots: canon_roots,
+            path: None,
+            parent: None,
+            dirs,
+            truncated: false,
+        }));
+    };
+
+    let target = crate::cli::validate_workspace(roots, path).map_err(AppError::BadRequest)?;
+
+    let mut dirs = Vec::new();
+    let mut truncated = false;
+    let mut rd = tokio::fs::read_dir(&target)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("could not read directory: {e}")))?;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Hidden entries (.git, .cache, …) are noise for a folder grant.
+        if name.starts_with('.') {
+            continue;
+        }
+        // Symlinked dirs are skipped: following one could point outside the
+        // roots, and the grant itself re-validates anyway.
+        let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+        if dirs.len() >= MAX_BROWSE_ENTRIES {
+            truncated = true;
+            break;
+        }
+        dirs.push(BrowseEntry {
+            path: target.join(&name).to_string_lossy().into_owned(),
+            name,
+        });
+    }
+    dirs.sort_by_key(|d| d.name.to_lowercase());
+
+    // Offer "up" only while the parent is still inside an allowed root.
+    let parent = target
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| {
+            canon_roots
+                .iter()
+                .any(|r| std::path::Path::new(p).starts_with(r))
+        });
+
+    Ok(Json(BrowseResponse {
+        roots: canon_roots,
+        path: Some(target.to_string_lossy().into_owned()),
+        parent,
+        dirs,
+        truncated,
+    }))
 }
 
 async fn cancel(
