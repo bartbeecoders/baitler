@@ -4,7 +4,6 @@ import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { featureItems } from '@/config/navigation';
 import { OBJECT_BASE_PATHS } from '@/config/objects';
-import { Dashboard } from '@/features/portal/Dashboard';
 import { FeaturePlaceholder } from '@/features/FeaturePlaceholder';
 import { NotFound } from '@/features/NotFound';
 import { useApplyTheme } from '@/stores/theme';
@@ -39,6 +38,11 @@ const DiagramsPage = lazy(() =>
 const SuperpagesPage = lazy(() =>
   import('@/features/superpages/SuperpagesPage').then((m) => ({ default: m.SuperpagesPage })),
 );
+// The butler home pulls in the agent transcript (react-markdown etc.), so it is
+// code-split like the other heavy surfaces.
+const ButlerHome = lazy(() =>
+  import('@/features/butler/ButlerHome').then((m) => ({ default: m.ButlerHome })),
+);
 
 /** Non-object feature routes that have a real implementation (others → placeholder). */
 const FEATURE_PAGES: Record<string, ReactNode> = {
@@ -71,7 +75,7 @@ function App() {
   return (
     <Routes>
       <Route element={<AppLayout />}>
-        <Route index element={<Dashboard />} />
+        <Route index element={<ButlerHome />} />
         {nonObjectFeatures.map((item) => (
           <Route
             key={item.path}

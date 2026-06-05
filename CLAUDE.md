@@ -109,8 +109,13 @@ mindmaps, extracted `value=` labels for diagrams — never raw markup), are firs
 The frontend ships lazy `MindmapsPage` (`@xyflow/react` canvas) and `DiagramsPage` (the draw.io editor
 in a `postMessage`/`?embed=1&proto=json` iframe loaded only on that authoring route, from
 `VITE_DRAWIO_URL` — default `https://embed.diagrams.net`, self-hostable for privacy; previews render as
-static `<img>` everywhere else). A `mcp::Actor{owner,agent}` (agent from `X-Baitler-Agent`)
-is threaded from `handle` → `tools::call`; mutating tools log one activity row centrally. All
+static `<img>` everywhere else). A `mcp::Actor{owner,agent,run_id}` (agent from `X-Baitler-Agent`,
+run id from `X-Baitler-Run` — stamped by the CLI runner's loopback MCP config) is threaded from
+`handle` → `tools::call`; mutating tools log one activity row centrally, now carrying `run_id`
+(migration 0017) so `GET /cli/runs/{id}/report` can aggregate exactly what a run created (the
+**butler report**: artifacts + per-action counts). `GET /cli/workspace/browse` lists directories
+strictly under `CLAUDE_CLI_WORKSPACE_ROOTS` (same canonicalize-under-roots check as a grant) for
+the folder-attach picker; `/activity` + the `activity_list` tool take a `run_id` filter. All
 tools share the REST handlers' validation, owner-scoped to the dev owner until auth lands.
 The MCP catalog drift guard (`call()` match + `known` list + count assert in `mcp/tools.rs`) must
 move in lockstep when adding a tool. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN`
@@ -121,7 +126,14 @@ Frontend (from `frontend/`): `npm run dev` (Vite, port 8100), `npm run build`
 (`tsc -b` + `vite build`), `npm run lint`, `npm run typecheck`, `npm test` (Vitest).
 Stack: React 19 + TS (strict) + Tailwind v4 + React Router 7 + TanStack Query 5 + Zustand;
 react-markdown + @tailwindcss/typography for Markdown. Heavy feature routes are lazy-loaded.
-Features built: base portal, Files (Phase 4), Ideas (Phase 5, reusable MarkdownEditor),
+Features built: **butler-first home** (redesign v2: `/` is the lazy `ButlerHome` in
+`src/features/butler/` — greeting + command composer with an attach-a-folder `WorkspacePicker`
+over `/cli/workspace/browse`, quick-task chips in `quickTasks.ts`, a live transcript, and a
+`RunReportFeed` of run cards built from `/cli/runs/{id}/report` with deep links + a
+drafts-awaiting-review banner; the conversation state machine is the shared
+`features/cli/useAgentChat.ts` + `EventRow.tsx`, also used by `AgentPanel`/dock; the old
+Dashboard card grid is gone and the agent dock is suppressed on `/` and `/agent`),
+Files (Phase 4), Ideas (Phase 5, reusable MarkdownEditor),
 AI (Phase 6: multi-provider chat via a Mock + OpenAI/OpenRouter/Anthropic adapter behind an
 `LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`),
 Documents (Phase 7: TipTap HTML editor + shared conversion pathway in `src/convert.rs` —
@@ -136,14 +148,15 @@ sandboxed `<iframe>` against the cross-origin `/p/{slug}` serve route, never by 
 Mindmaps (Phase 14: lazy `MindmapsPage` — a `@xyflow/react` node/edge canvas, import-from-outline,
 seed-from-project, autosaving the graph), Diagrams (Phase 14: lazy `DiagramsPage` — the draw.io editor
 embedded via `postMessage`, persisting mxGraph XML + a static SVG/PNG preview).
-**Sidebar "Objects" layout:** the content types (Documents/Ideas/Pages/Mindmaps/Diagrams) are
-not flat nav links — they live in an expandable **"Objects"** group in the left `Sidebar`
-(`src/features/objects/`: a generic `ObjectList` with +/search/filter/refresh/trash controls, per-type
-`adapters.tsx`, the `ObjectsNav` accordion, expansion state in `stores/objectsNav.ts`). Selecting an
-item deep-links to a detail route, so each of those feature **pages renders editor-only** (`/{base}` →
-an `EmptyDetail` hint, `/{base}/:id` → the editor); Ideas opens its modal at `/ideas/:id` and
-`/ideas/new`. Files/Projects/AI/Agent stay flat nav. (Known minor follow-up: tapping an Objects item on
-mobile doesn't auto-close the drawer.)
+**Rail + "Objects" layout (redesign v2):** desktop navigation is a thin **icon rail**
+(`components/layout/Rail.tsx`, `w-16`); the content types (Documents/Ideas/Pages/Mindmaps/Diagrams/
+Superpages) live behind its **Objects** button, which opens a flyout panel reusing the `ObjectsNav`
+accordion (`src/features/objects/`: a generic `ObjectList` with +/search/filter/refresh/trash controls,
+per-type `adapters.tsx`, expansion state in `stores/objectsNav.ts`). Mobile keeps the full drawer
+(`Sidebar`). Selecting an item deep-links to a detail route, so each of those feature **pages renders
+editor-only** (`/{base}` → an `EmptyDetail` hint, `/{base}/:id` → the editor); Ideas opens its modal at
+`/ideas/:id` and `/ideas/new`. Files/Projects/AI/Agent stay direct rail icons. (Known minor follow-up:
+tapping an Objects item on mobile doesn't auto-close the drawer.)
 No LLM egress/keys in this env — the Mock provider is the tested path; real adapters are
 compiled but unexercised. PDF export needs Chrome; Word needs Pandoc (absent here → 503).
 Set `APP_SECRET` in production.

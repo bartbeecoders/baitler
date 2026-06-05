@@ -14,6 +14,24 @@ vi.mock('@/lib/api', () => ({
     if (path.startsWith('/files')) {
       return { folder: null, breadcrumbs: [], folders: [], files: [] };
     }
+    // The butler home's readiness/feed queries.
+    if (path === '/cli/status')
+      return {
+        enabled: true,
+        kind: 'mock',
+        binary_ok: true,
+        version: null,
+        has_stored_key: false,
+        host_key_env: false,
+        ready: true,
+        message: 'Ready.',
+        providers: [{ id: 'claude_code', label: 'Claude Code', available: true, detail: 'ok' }],
+        workspace_roots: [],
+      };
+    if (path === '/cli/runs') return { runs: [] };
+    if (path === '/ai/providers') return { providers: [] };
+    if (path === '/projects') return { projects: [] };
+    if (path === '/review') return { ideas: [], documents: [] };
     throw new Error(`unexpected path: ${path}`);
   }),
   apiFetchBlob: vi.fn(async () => new Blob()),
@@ -31,9 +49,14 @@ function renderAt(path: string) {
 }
 
 describe('App routing', () => {
-  it('renders the dashboard at /', () => {
+  it('renders the butler home at / (lazy-loaded)', async () => {
     renderAt('/');
-    expect(screen.getByRole('heading', { name: /welcome to baitler/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: /what shall i organize for you/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('textbox', { name: /tell the butler what to do/i }),
+    ).toBeInTheDocument();
   });
 
   it('renders the files page at /files (lazy-loaded)', async () => {

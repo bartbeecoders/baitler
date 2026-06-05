@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard,
+  ConciergeBell,
   FolderOpen,
   Lightbulb,
   BarChart3,
@@ -27,10 +27,10 @@ export interface NavItem {
 /** Primary navigation — drives both the sidebar and the dashboard cards. */
 export const navItems: NavItem[] = [
   {
-    label: 'Dashboard',
+    label: 'Butler',
     path: '/',
-    icon: LayoutDashboard,
-    description: 'Your base portal — everything in one place.',
+    icon: ConciergeBell,
+    description: 'Your AI butler — point it at work and review what it organized.',
     phase: null,
   },
   {
