@@ -776,7 +776,20 @@ Architecture: a plugin is one row in a new `plugin` table plus one self-containe
 
 ### A — Registry seam (prereq, zero behavior change)
 
-- [ ] **16.1** Split the static MCP catalog from dynamic dispatch, green build, no behavior change. Rename the hand-written catalog to `static_definitions()`; `definitions(state)` returns statics chained with `state.plugins.tool_defs()` (empty for now) — call sites: the `tools/list` arm in `mcp/mod.rs` and the drift-guard test. Widen `tools::call` to take `&Actor` (mechanical; arms read `actor.owner`). Add `pub plugins: Arc<PluginRegistry>` to `AppState` (`RwLock<Vec<Arc<LoadedPlugin>>>` — the RunRegistry Vec-of-Arc convention), constructed empty in `AppState::new`. In dispatch, route `name.starts_with("plugin__")` to `state.plugins.dispatch(actor, …)` *before* the genuine `UnknownTool` fallthrough. Scope the drift guard to `static_definitions()` (keep `known[]` + count assert verbatim; add the no-static-`plugin__`-prefix assert). Config: `PLUGINS_ENABLED=false` (+ `.env.example` block) and a `plugins` Cargo feature.
+> **Milestone A shipped** (branch `phase-16-plugins`). `src/plugins/{mod,registry}.rs` (always-empty
+> `PluginRegistry` — `std::sync::RwLock<Vec<Arc<LoadedPlugin>>>`, short never-await-holding sections — plus the
+> reserved `TOOL_PREFIX = "plugin__"`); `AppState.plugins`; `tools::call` widened to `&Actor` (owner bound once at
+> the top — zero arm edits) with the `plugin__*` guard arm ahead of `UnknownTool`; `definitions(state)` chains
+> `static_definitions()` (drift guard re-pinned to it + a reserved-prefix assert) with `tool_defs()`;
+> `PluginsConfig`/`PLUGINS_ENABLED` (fail-fast, default false) + `plugins = []` Cargo feature + `.env.example`
+> block; 13 test `Config` literals gained `plugins: Default::default()`. **As-built deltas:** (a) `tools::call`
+> narrowed `pub`→`pub(crate)` (its `&Actor` param is `pub(crate)`; no external consumer — the stdio bridge is
+> HTTP-only); (b) `PluginRegistry::dispatch` returns `UnknownTool` unconditionally rather than searching the
+> always-empty Vec. **Verified:** fmt/clippy `-D warnings`/179 tests green on default *and* `--features plugins`;
+> live server: 80 tools, `plugin__foo__bar` → the identical `-32602` as any unknown name; adversarial 3-lens
+> review (16 findings → 1 confirmed comment fix, 15 refuted).
+
+- [x] **16.1** Split the static MCP catalog from dynamic dispatch, green build, no behavior change. Rename the hand-written catalog to `static_definitions()`; `definitions(state)` returns statics chained with `state.plugins.tool_defs()` (empty for now) — call sites: the `tools/list` arm in `mcp/mod.rs` and the drift-guard test. Widen `tools::call` to take `&Actor` (mechanical; arms read `actor.owner`). Add `pub plugins: Arc<PluginRegistry>` to `AppState` (`RwLock<Vec<Arc<LoadedPlugin>>>` — the RunRegistry Vec-of-Arc convention), constructed empty in `AppState::new`. In dispatch, route `name.starts_with("plugin__")` to `state.plugins.dispatch(actor, …)` *before* the genuine `UnknownTool` fallthrough. Scope the drift guard to `static_definitions()` (keep `known[]` + count assert verbatim; add the no-static-`plugin__`-prefix assert). Config: `PLUGINS_ENABLED=false` (+ `.env.example` block) and a `plugins` Cargo feature.
 
 ### B — Storage, lifecycle & the MCP-tool kind (the proving slice)
 

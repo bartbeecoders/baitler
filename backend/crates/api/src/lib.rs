@@ -25,6 +25,7 @@ pub mod migrations;
 pub mod mindmap;
 pub mod owner;
 pub mod pages;
+pub mod plugins;
 pub mod routes;
 pub mod slug;
 pub mod state;

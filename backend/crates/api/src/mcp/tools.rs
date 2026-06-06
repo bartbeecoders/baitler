@@ -44,7 +44,7 @@ use crate::superpage::context;
 use crate::superpage::model::{Layout, SuperpageDto, SuperpageSummary};
 use crate::superpage::repo as superpage_repo;
 
-use super::b64;
+use super::{b64, Actor};
 
 /// An error from executing a tool.
 pub enum ToolError {
@@ -97,7 +97,12 @@ const ANTHROPIC_PROVIDER: &str = "anthropic";
 
 /// Execute a tool by name. Returns the raw tool result value; the protocol
 /// layer wraps it into MCP `content`.
-pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> ToolResult {
+///
+/// Takes the full [`Actor`] (not just the owner) so the plugin dispatch path
+/// (Phase 16) carries provenance and run-gating; the static tools below remain
+/// owner-scoped.
+pub(crate) async fn call(state: &AppState, actor: &Actor, name: &str, args: &Value) -> ToolResult {
+    let owner = actor.owner.as_str();
     match name {
         "health" => health(state).await,
         // Ideas
@@ -196,6 +201,12 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "ai_chat" => ai_chat(state, owner, args).await,
         // Conversion / export
         "export" => export_tool(args).await,
+        // Plugin-provided tools (Phase 16): resolved by the runtime registry,
+        // not this static match. The registry is empty until the 16.B loader
+        // lands, so today this yields the same UnknownTool as before the seam.
+        n if n.starts_with(crate::plugins::TOOL_PREFIX) => {
+            state.plugins.dispatch(actor, n, args).await
+        }
         _ => Err(ToolError::UnknownTool),
     }
 }
@@ -2532,8 +2543,19 @@ fn bool_schema(desc: &str) -> Value {
     json!({ "type": "boolean", "description": desc })
 }
 
-/// The full set of tools advertised to MCP clients.
-pub fn definitions() -> Vec<Value> {
+/// The full set of tools advertised to MCP clients: the static hand-written
+/// catalog plus any tools contributed by enabled plugins (Phase 16; none until
+/// the 16.B loader populates the registry).
+pub fn definitions(state: &AppState) -> Vec<Value> {
+    let mut defs = static_definitions();
+    defs.extend(state.plugins.tool_defs());
+    defs
+}
+
+/// The static, hand-written tool catalog. The drift-guard test pins exactly
+/// this list (names ⊆ `known`, equal counts); plugin tools are advertised
+/// dynamically via [`definitions`] and never appear here.
+fn static_definitions() -> Vec<Value> {
     let status_desc = format!("one of: {}", STATUSES.join(", "));
     vec![
         def("health", "Service and database readiness check.", json!({}), &[]),
@@ -3338,7 +3360,9 @@ mod tests {
         // We can't call them without a DB here, but we can assert the names are
         // known by checking `call` returns something other than UnknownTool for
         // a syntactically present name — done via the explicit name list below.
-        let advertised: Vec<String> = definitions()
+        // Scoped to the STATIC catalog: plugin tools (Phase 16) are advertised
+        // dynamically through the registry and never need this lockstep edit.
+        let advertised: Vec<String> = static_definitions()
             .iter()
             .map(|d| d["name"].as_str().unwrap().to_string())
             .collect();
@@ -3426,13 +3450,20 @@ mod tests {
         ];
         for name in &advertised {
             assert!(known.contains(&name.as_str()), "undispatched tool: {name}");
+            // The plugin namespace is reserved for registry-dispatched tools;
+            // a static tool here would shadow (and collide with) the
+            // dynamically-dispatched plugin namespace.
+            assert!(
+                !name.starts_with(crate::plugins::TOOL_PREFIX),
+                "static tool in the plugin namespace: {name}"
+            );
         }
         assert_eq!(advertised.len(), known.len(), "tool count drifted");
     }
 
     #[test]
     fn tool_schemas_are_well_formed() {
-        for d in definitions() {
+        for d in static_definitions() {
             assert!(d["name"].is_string());
             assert!(d["description"].is_string());
             assert_eq!(d["inputSchema"]["type"], "object");

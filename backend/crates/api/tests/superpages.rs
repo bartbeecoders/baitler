@@ -35,6 +35,7 @@ fn test_config() -> Config {
         },
         cli: CliConfig::default(),
         workspace_roots: Vec::new(),
+        plugins: Default::default(),
         public_page_origin: None,
         secret_key: [9u8; 32],
     }

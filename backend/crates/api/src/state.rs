@@ -6,6 +6,7 @@ use crate::cli::{AgentRunner, RunRegistry};
 use crate::config::Config;
 use crate::db::Db;
 use crate::llm::LlmRegistry;
+use crate::plugins::PluginRegistry;
 use crate::storage::Storage;
 
 /// Cloneable handle to shared resources. `Clone` is cheap: it bumps the inner
@@ -21,6 +22,9 @@ pub struct AppState {
     pub cli_runner: Arc<dyn AgentRunner>,
     /// Active-run registry (per-owner serialisation + cancellation).
     pub cli_runs: Arc<RunRegistry>,
+    /// Plugin registry (Phase 16): MCP tools contributed by enabled plugins.
+    /// Constructed empty; the Phase 16.B loader populates it in `build_state`.
+    pub plugins: Arc<PluginRegistry>,
 }
 
 impl AppState {
@@ -33,6 +37,7 @@ impl AppState {
             llm: Arc::new(LlmRegistry::with_defaults()),
             cli_runner,
             cli_runs: Arc::new(RunRegistry::default()),
+            plugins: Arc::new(PluginRegistry::default()),
         }
     }
 }

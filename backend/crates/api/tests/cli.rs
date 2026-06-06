@@ -44,6 +44,7 @@ fn test_config(cli_enabled: bool) -> Config {
             ..CliConfig::default()
         },
         workspace_roots: Vec::new(),
+        plugins: Default::default(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }

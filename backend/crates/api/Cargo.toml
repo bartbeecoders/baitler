@@ -52,3 +52,10 @@ hex.workspace = true
 pulldown-cmark.workspace = true
 html2md.workspace = true
 ammonia.workspace = true
+
+[features]
+# Phase 16 plugin system. The WASM runtime (Extism) hangs off this feature once
+# the 16.B loader lands, so default builds avoid the heavy native dependency;
+# the registry seam itself (16.1) is always compiled. Runtime activation is
+# additionally gated by PLUGINS_ENABLED (default false).
+plugins = []

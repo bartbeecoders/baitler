@@ -127,8 +127,13 @@ refused** these tools at the protocol layer (`X-Baitler-Run` ⇒ rejected before
 disk access remains its per-run read-only grant. All
 tools share the REST handlers' validation, owner-scoped to the dev owner until auth lands.
 The MCP catalog drift guard (`call()` match + `known` list + count assert in `mcp/tools.rs`) must
-move in lockstep when adding a tool. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN`
-(optional bearer, constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
+move in lockstep when adding a **static** tool — it pins `static_definitions()` only and reserves the
+`plugin__` name prefix. The **Phase 16.1 plugin seam** (`src/plugins/`): an always-empty
+`PluginRegistry` on `AppState`; `tools::call` takes the full `&Actor` and routes `plugin__*` names to
+`registry.dispatch` (today → the same unknown-tool error); `tools/list` chains plugin `tool_defs()`
+after the statics. Gated by `PLUGINS_ENABLED` (default false) + a `plugins` Cargo feature (the Extism
+runtime hangs off it in 16.B). Full design: plan.md "Phase 16". Config: `MCP_ENABLED` (default true),
+`MCP_AUTH_TOKEN` (optional bearer, constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
 JSON result. Full client setup (Claude Code, Hermes agent, other MCP tools) is in **`docs/mcp.md`**.
 
 Frontend (from `frontend/`): `npm run dev` (Vite, port 8100), `npm run build`

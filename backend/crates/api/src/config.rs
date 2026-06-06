@@ -60,6 +60,8 @@ pub struct Config {
     pub mcp: McpConfig,
     /// Claude Code CLI runner settings (Phase 13).
     pub cli: CliConfig,
+    /// Plugin system settings (Phase 16).
+    pub plugins: PluginsConfig,
     /// Absolute host directories Baitler features may touch on the local disk:
     /// the per-run **read-only** folder grant for agent runs, the workspace
     /// browse picker, and the MCP `workspace_*` file tools. Parsed from
@@ -84,6 +86,17 @@ pub struct McpConfig {
     /// `Authorization: Bearer <token>`; when unset, the endpoint is open (rely
     /// on a localhost bind / network controls instead).
     pub auth_token: Option<String>,
+}
+
+/// Settings for the plugin system (Phase 16).
+///
+/// **Off by default**: enabling it is a deliberate act because, once the Phase
+/// 16.B loader/runtime lands, it executes agent-authored (human-approved) WASM
+/// inside the API process. Until then the flag only gates the (empty) registry.
+#[derive(Clone, Debug, Default)]
+pub struct PluginsConfig {
+    /// Whether the plugin system is active at all.
+    pub enabled: bool,
 }
 
 /// Settings for the Claude Code CLI runner (`/cli/runs`, Phase 13).
@@ -211,6 +224,7 @@ impl Config {
     ///   `SURREAL_PASS`,
     ///   `SURREAL_NS` (baitler), `SURREAL_DB` (baitler)
     /// - `MCP_ENABLED` (true), `MCP_AUTH_TOKEN` (unset → open `/mcp` endpoint)
+    /// - `PLUGINS_ENABLED` (false)
     ///
     /// Note: the bind host is `BIND_HOST`, not `HOST` — the latter is commonly
     /// set by shells/build tooling (e.g. conda sets it to a target triple) and
@@ -289,6 +303,15 @@ impl Config {
             enabled: parse_bool(env::var("MCP_ENABLED").ok(), true)
                 .map_err(|raw| ConfigError::invalid("MCP_ENABLED", raw, "expected a boolean"))?,
             auth_token: non_empty(env::var("MCP_AUTH_TOKEN").ok()),
+        };
+
+        // Plugin system (Phase 16). Off by default: when enabled (and once the
+        // 16.B loader lands), approved plugins execute inside the embedded
+        // WASM runtime.
+        let plugins = PluginsConfig {
+            enabled: parse_bool(env::var("PLUGINS_ENABLED").ok(), false).map_err(|raw| {
+                ConfigError::invalid("PLUGINS_ENABLED", raw, "expected a boolean")
+            })?,
         };
 
         // Origin for public page share URLs. Trailing slashes are trimmed so the
@@ -377,6 +400,7 @@ impl Config {
             storage,
             mcp,
             cli,
+            plugins,
             workspace_roots,
             public_page_origin,
             secret_key,
@@ -457,6 +481,7 @@ impl fmt::Debug for Config {
             .field("storage", &self.storage)
             .field("mcp", &self.mcp)
             .field("cli", &self.cli)
+            .field("plugins", &self.plugins)
             .field("public_page_origin", &self.public_page_origin)
             .field("secret_key", &"***")
             .finish()
@@ -493,6 +518,7 @@ mod tests {
         "SURREAL_DB",
         "MCP_ENABLED",
         "MCP_AUTH_TOKEN",
+        "PLUGINS_ENABLED",
     ];
 
     fn clear_env() {
@@ -613,6 +639,23 @@ mod tests {
         let err = Config::from_env().unwrap_err();
         let ConfigError::Invalid { name, .. } = err;
         assert_eq!(name, "MCP_ENABLED");
+        clear_env();
+    }
+
+    #[test]
+    fn plugins_default_off_parse_and_reject() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_env();
+
+        let cfg = Config::from_env().expect("defaults should be valid");
+        assert!(!cfg.plugins.enabled);
+
+        env::set_var("PLUGINS_ENABLED", "on");
+        assert!(Config::from_env().expect("valid").plugins.enabled);
+
+        env::set_var("PLUGINS_ENABLED", "maybe");
+        let ConfigError::Invalid { name, .. } = Config::from_env().unwrap_err();
+        assert_eq!(name, "PLUGINS_ENABLED");
         clear_env();
     }
 

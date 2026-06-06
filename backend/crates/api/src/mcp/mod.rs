@@ -186,7 +186,7 @@ async fn dispatch(state: &AppState, actor: &Actor, msg: Value) -> Option<Value> 
     let result: Result<Value, (i64, String)> = match method {
         "initialize" => Ok(initialize_result(&params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools::definitions() })),
+        "tools/list" => Ok(json!({ "tools": tools::definitions(state) })),
         "resources/list" => Ok(json!({ "resources": [] })),
         "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
@@ -266,7 +266,7 @@ async fn handle_tools_call(state: &AppState, actor: &Actor, id: Value, params: &
         );
     }
 
-    match tools::call(state, &actor.owner, name, &args).await {
+    match tools::call(state, actor, name, &args).await {
         Ok(value) => {
             // Record provenance for mutating tools (best-effort; never fail the
             // call because the audit write hiccupped).
