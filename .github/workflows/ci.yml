@@ -40,6 +40,17 @@ jobs:
         if: steps.check.outputs.exists == 'true'
         working-directory: backend
         run: cargo test
+      # Phase 16: the WASM plugin runtime is feature-gated (heavy wasmtime
+      # dependency). Lint + test the `plugins` configuration too so the
+      # sandbox/runtime path can never rot unnoticed.
+      - name: clippy (plugins feature)
+        if: steps.check.outputs.exists == 'true'
+        working-directory: backend
+        run: cargo clippy --all-targets --features plugins -- -D warnings
+      - name: test (plugins feature)
+        if: steps.check.outputs.exists == 'true'
+        working-directory: backend
+        run: cargo test --features plugins
 
   frontend:
     name: Frontend (React/Vite)

@@ -30,6 +30,9 @@ pub fn router(state: AppState) -> Router {
     let diagrams = crate::diagrams::routes::router();
     let superpages = crate::superpage::routes::router();
     let cli = crate::cli::routes::router();
+    // Plugin management incl. the PORTAL-ONLY lifecycle verbs (approve/enable/
+    // disable/reject) that deliberately have no MCP equivalent (Phase 16).
+    let plugins = crate::plugins::routes::router();
     // The MCP server reuses the same state/repos. Its routes carry their own,
     // larger body limit for Base64 tool payloads.
     let mcp =
@@ -51,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .merge(diagrams)
         .merge(superpages)
         .merge(cli)
+        .merge(plugins)
         .merge(mcp)
         .fallback(not_found)
         .layer(cors);

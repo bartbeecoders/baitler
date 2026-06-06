@@ -63,7 +63,11 @@ pub async fn build_state(
         tracing::warn!(orphaned, "failed orphaned cli runs from a previous process");
     }
     let storage = build_storage(&config.storage).await?;
-    Ok(AppState::new(config, db, storage))
+    let state = AppState::new(config, db, storage);
+    // Load enabled plugins into the runtime registry (Phase 16). Failures
+    // auto-disable the offending plugin and never abort startup.
+    plugins::load_enabled(&state).await;
+    Ok(state)
 }
 
 /// Construct the configured storage backend.

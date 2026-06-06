@@ -13,7 +13,7 @@
 //!
 //! Tools live in [`tools`]; the JSON-RPC envelope in [`protocol`].
 
-mod b64;
+pub(crate) mod b64;
 mod protocol;
 pub mod tools;
 
@@ -262,6 +262,21 @@ async fn handle_tools_call(state: &AppState, actor: &Actor, id: Value, params: &
                  folder, ask the user to attach it to the conversation (\"Attach a \
                  folder\" on the Baitler home) and re-send their request; do not retry \
                  these tools.",
+            ),
+        );
+    }
+
+    // Same containment stance for destructive plugin management (Phase 16): a
+    // Baitler-spawned run may author and PROPOSE plugins (forced drafts) and
+    // invoke enabled ones, but never remove an installed plugin — and there is
+    // no approve/enable verb on the MCP surface at all.
+    if name == "plugins_uninstall" && actor.run_id.is_some() {
+        return protocol::success(
+            id,
+            tool_err(
+                "plugins_uninstall is not available to Baitler-spawned agent runs — \
+                 propose changes with plugins_create and let the user manage installed \
+                 plugins in the portal; do not retry this tool.",
             ),
         );
     }

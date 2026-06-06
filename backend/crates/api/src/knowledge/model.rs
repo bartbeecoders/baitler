@@ -12,6 +12,7 @@ pub const ITEM_TYPES: &[&str] = &[
     "mindmap",
     "diagram",
     "superpage",
+    "plugin",
 ];
 /// Types that can belong to a project (everything except project itself).
 pub const MEMBER_TYPES: &[&str] = &[
@@ -22,6 +23,7 @@ pub const MEMBER_TYPES: &[&str] = &[
     "mindmap",
     "diagram",
     "superpage",
+    "plugin",
 ];
 /// Project lifecycle states.
 pub const PROJECT_STATUSES: &[&str] = &["active", "archived"];
@@ -75,6 +77,7 @@ pub struct MemberCounts {
     pub mindmaps: usize,
     pub diagrams: usize,
     pub superpages: usize,
+    pub plugins: usize,
     /// Members still in `review = "draft"` (ideas + documents), i.e. pending approval.
     pub drafts: usize,
 }
@@ -121,13 +124,17 @@ pub struct ProjectMembers {
     pub mindmaps: Vec<MemberItem>,
     pub diagrams: Vec<MemberItem>,
     pub superpages: Vec<MemberItem>,
+    pub plugins: Vec<MemberItem>,
 }
 
-/// Pending-approval ideas + documents (review = draft) for the portal queue.
+/// Pending-approval ideas + documents + plugins (review = draft) for the portal
+/// queue. Plugin drafts additionally need a status transition (approve/enable —
+/// portal-only REST), but they surface for the human here like any draft.
 #[derive(Debug, Default, Serialize)]
 pub struct ReviewQueue {
     pub ideas: Vec<MemberItem>,
     pub documents: Vec<MemberItem>,
+    pub plugins: Vec<MemberItem>,
 }
 
 /// One full-text search hit (within a typed section).
@@ -155,6 +162,7 @@ pub struct SearchResults {
     pub mindmaps: Vec<SearchHit>,
     pub diagrams: Vec<SearchHit>,
     pub superpages: Vec<SearchHit>,
+    pub plugins: Vec<SearchHit>,
 }
 
 /// One entry in the cross-type tag taxonomy (Phase 14): a tag and how many

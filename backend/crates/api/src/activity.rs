@@ -144,11 +144,31 @@ pub fn entry_for(tool: &str, result: &Value) -> Option<ActivityEntry> {
         "workspace_rmdir" => ("workspace.rmdir", "workspace"),
         "workspace_move" => ("workspace.move", "workspace"),
         "workspace_copy" => ("workspace.copy", "workspace"),
+        // Plugins (Phase 16). Content a plugin writes through HOST FNS records
+        // its own rows (hostfns.rs) — this map only covers the MCP tool names.
+        // BOTH execution paths log an invoke: the namespaced plugin__* tools
+        // and the plugins_invoke meta-tool (same runtime underneath).
+        "plugins_create" => ("plugin.create", "plugin"),
+        "plugins_uninstall" => ("plugin.uninstall", "plugin"),
+        "plugins_invoke" => ("plugin.invoke", "plugin"),
+        t if t.starts_with("plugin__") => ("plugin.invoke", "plugin"),
         // Everything else (list/get/read/search/export/health/ai_*) is read-only.
         _ => return None,
     };
     let field = |k: &str| result.get(k).and_then(|v| v.as_str()).map(str::to_string);
     let target_id = field("id").unwrap_or_default();
+    // A plugin tool's result is arbitrary plugin output; attribute the row to
+    // the invoked tool name rather than fishing in the payload.
+    if action == "plugin.invoke" {
+        return Some(ActivityEntry {
+            action: action.to_string(),
+            target_type: target_type.to_string(),
+            target_id,
+            target_title: tool.to_string(),
+            project_id: None,
+            summary: format!("{action} · {tool}"),
+        });
+    }
     let target_title = field("title").or_else(|| field("name")).unwrap_or_default();
     let project_id = field("project_id");
     let summary = if target_title.is_empty() {

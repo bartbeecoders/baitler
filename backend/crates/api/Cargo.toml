@@ -52,10 +52,17 @@ hex.workspace = true
 pulldown-cmark.workspace = true
 html2md.workspace = true
 ammonia.workspace = true
+# The WASM plugin runtime (Phase 16), behind the `plugins` feature.
+extism = { workspace = true, optional = true }
 
 [features]
 # Phase 16 plugin system. The WASM runtime (Extism) hangs off this feature once
 # the 16.B loader lands, so default builds avoid the heavy native dependency;
 # the registry seam itself (16.1) is always compiled. Runtime activation is
 # additionally gated by PLUGINS_ENABLED (default false).
-plugins = []
+plugins = ["dep:extism"]
+
+[dev-dependencies]
+# Compiles the hand-written WAT plugin fixtures used by the Phase 16 runtime
+# integration tests (pure Rust, no system toolchain).
+wat.workspace = true

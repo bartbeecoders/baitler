@@ -127,13 +127,31 @@ refused** these tools at the protocol layer (`X-Baitler-Run` ⇒ rejected before
 disk access remains its per-run read-only grant. All
 tools share the REST handlers' validation, owner-scoped to the dev owner until auth lands.
 The MCP catalog drift guard (`call()` match + `known` list + count assert in `mcp/tools.rs`) must
-move in lockstep when adding a **static** tool — it pins `static_definitions()` only and reserves the
-`plugin__` name prefix. The **Phase 16.1 plugin seam** (`src/plugins/`): an always-empty
-`PluginRegistry` on `AppState`; `tools::call` takes the full `&Actor` and routes `plugin__*` names to
-`registry.dispatch` (today → the same unknown-tool error); `tools/list` chains plugin `tool_defs()`
-after the statics. Gated by `PLUGINS_ENABLED` (default false) + a `plugins` Cargo feature (the Extism
-runtime hangs off it in 16.B). Full design: plan.md "Phase 16". Config: `MCP_ENABLED` (default true),
-`MCP_AUTH_TOKEN` (optional bearer, constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
+move in lockstep when adding a **static** tool — it pins `static_definitions()` only (**89** statics)
+and reserves the `plugin__` name prefix for dynamic dispatch. The **Phase 16 plugin system**
+(`src/plugins/`, migration 0018) is the self-improvement loop: an agent authors a plugin over MCP
+(`plugins_scaffold/validate/test/create/list/get/invoke/export/uninstall`) and it lands as a
+**forced draft** (`plugins_create` ignores caller `review`/`status` — stricter than `clean_review`);
+approve/enable/disable/reject are **portal-only REST** (`POST /plugins/{id}/...` — no MCP verb
+exists), surfaced via the `review_queue`'s new `plugins` section; enabling hot-loads it into the
+`PluginRegistry` on `AppState` (sha256 bundle digest + `api_version` ABI epoch re-verified; failures
+auto-disable) and its manifest-declared tools advertise as `plugin__{slug}__{tool}` in `tools/list`
+(visible to clients on their next session — the JSON-response transport has no list_changed push;
+`plugins_invoke` works immediately). Execution is **Extism/Wasmtime behind the `plugins` Cargo
+feature** (heavy dep; without it everything but execution works): fresh instance per invocation, no
+WASI/fs/network, `memory_max_pages` + `timeout_ms` epoch kill, and a **closed enum of owner-scoped
+host fns** (`log`, `kn_search`, `ideas_get`, `ideas_create`, `pages_create`, `plugin_kv_get/set` —
+no filesystem fn exists, manifests are deny-unknown-fields, egress/secrets v1-denied). Host-fn
+content writes are forced draft and **record their own activity rows** (`plugin:{slug}` + invoking
+`run_id`); every invocation logs `plugin.invoke`. `plugin_kv` (keyed owner+slug, survives upgrades,
+cascaded on uninstall) is the only plugin persistence — plugins never define tables. A
+Baitler-spawned run may author/propose/invoke-enabled but is refused `plugins_uninstall` at the
+protocol layer (the `workspace_` precedent). "plugin" is a first-class knowledge item
+(`ITEM_TYPES`/`MEMBER_TYPES`/`knowledge_search` section). `plugin` is enabled by `PLUGINS_ENABLED`
+(default false). Tests: `tests/plugins.rs` (lifecycle, default features) + `tests/plugins_runtime.rs`
+(hand-written WAT fixtures under `--features plugins`); CI runs both configurations. Authoring guide:
+**`docs/plugins.md`**. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN` (optional bearer,
+constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
 JSON result. Full client setup (Claude Code, Hermes agent, other MCP tools) is in **`docs/mcp.md`**.
 
 Frontend (from `frontend/`): `npm run dev` (Vite, port 8100), `npm run build`

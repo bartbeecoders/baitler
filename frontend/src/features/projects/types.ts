@@ -41,6 +41,9 @@ export interface ProjectDetail extends Project {
 export interface ReviewQueue {
   ideas: MemberItem[];
   documents: MemberItem[];
+  /** Draft plugins awaiting approval (Phase 16; approve/enable lives at
+   * /plugins/{id}/... — full management UI lands with 16.C). */
+  plugins?: MemberItem[];
 }
 
 export interface Activity {

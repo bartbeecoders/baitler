@@ -50,10 +50,11 @@ fn any_table(kind: &str) -> AppResult<&'static str> {
         })
 }
 
-/// The title-ish column for a table (`name` for files/projects, `title` else).
+/// The title-ish column for a table (`name` for files/projects/plugins,
+/// `title` else).
 fn title_col(table: &str) -> &'static str {
     match table {
-        "file" | "project" => "name",
+        "file" | "project" | "plugin" => "name",
         _ => "title",
     }
 }
@@ -219,6 +220,7 @@ pub async fn project_members(db: &Db, owner: &str, project_id: &str) -> AppResul
         mindmaps: members_of(db, owner, "mindmap", project_id).await?,
         diagrams: members_of(db, owner, "diagram", project_id).await?,
         superpages: members_of(db, owner, "superpage", project_id).await?,
+        plugins: members_of(db, owner, "plugin", project_id).await?,
     })
 }
 
@@ -268,25 +270,38 @@ pub async fn member_counts(db: &Db, owner: &str, project_id: &str) -> AppResult<
         mindmaps: members.mindmaps.len(),
         diagrams: members.diagrams.len(),
         superpages: members.superpages.len(),
+        plugins: members.plugins.len(),
         drafts,
     })
 }
 
 // ── Review queue ──────────────────────────────────────────────────────────────
 
-/// Ideas + documents still in `review = "draft"`, newest first — what the portal
-/// review queue shows for human approval.
+/// Ideas + documents + plugins still in `review = "draft"`, newest first — what
+/// the portal review queue shows for human approval.
 pub async fn review_queue(db: &Db, owner: &str) -> AppResult<ReviewQueue> {
     Ok(ReviewQueue {
         ideas: drafts_of(db, owner, "idea").await?,
         documents: drafts_of(db, owner, "document").await?,
+        plugins: drafts_of(db, owner, "plugin").await?,
     })
 }
 
 async fn drafts_of(db: &Db, owner: &str, table: &str) -> AppResult<Vec<MemberItem>> {
+    let tcol = title_col(table);
+    // Plugins carry a second, orthogonal lifecycle (`status`): a portal reject
+    // parks the row at status="rejected" while review stays "draft", so gate on
+    // status="draft" to surface only genuinely pending plugins — otherwise a
+    // rejected plugin would haunt the queue forever with no way to clear it.
+    // (Ideas/documents have no such status column.)
+    let status_guard = if table == "plugin" {
+        " AND status = \"draft\""
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT uuid AS id, title, review, updated_at FROM {table} \
-         WHERE owner = $owner AND review = \"draft\" ORDER BY updated_at DESC"
+        "SELECT uuid AS id, {tcol} AS title, review, updated_at FROM {table} \
+         WHERE owner = $owner AND review = \"draft\"{status_guard} ORDER BY updated_at DESC"
     );
     let mut res = db
         .query(sql)
@@ -460,6 +475,7 @@ pub async fn search(db: &Db, owner: &str, q: &str, limit: usize) -> AppResult<Se
         mindmaps: search_two(db, owner, "mindmap", "title", "search_text", q, limit).await?,
         diagrams: search_two(db, owner, "diagram", "title", "search_text", q, limit).await?,
         superpages: search_two(db, owner, "superpage", "title", "search_text", q, limit).await?,
+        plugins: search_two(db, owner, "plugin", "name", "description", q, limit).await?,
     })
 }
 

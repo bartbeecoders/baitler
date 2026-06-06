@@ -39,6 +39,9 @@ use crate::mindmap::model::{
 use crate::mindmap::repo::{self as mindmap_repo, MindmapPatch};
 use crate::pages::model::{PageDto, PageSummary, SOURCE_FORMATS, VISIBILITIES};
 use crate::pages::repo::{self as pages_repo, PagePatch};
+use crate::plugins::manifest as plugin_manifest;
+use crate::plugins::model::{PluginDto, PLUGIN_STATUSES};
+use crate::plugins::repo as plugins_repo;
 use crate::state::AppState;
 use crate::superpage::context;
 use crate::superpage::model::{Layout, SuperpageDto, SuperpageSummary};
@@ -86,9 +89,11 @@ const MAX_DOC_BODY: usize = 5_000_000;
 /// memory-heavy; larger blobs should use the HTTP upload/download endpoints).
 const MAX_BLOB: usize = 24 * 1024 * 1024;
 /// Link/search endpoint types (mirrors [`crate::knowledge::model::ITEM_TYPES`]).
-const ITEM_TYPES_DESC: &str = "idea | document | file | project | page | mindmap | diagram";
+const ITEM_TYPES_DESC: &str =
+    "idea | document | file | project | page | mindmap | diagram | superpage | plugin";
 /// Project membership types (mirrors [`crate::knowledge::model::MEMBER_TYPES`]).
-const MEMBER_TYPES_DESC: &str = "idea | document | file | page | mindmap | diagram";
+const MEMBER_TYPES_DESC: &str =
+    "idea | document | file | page | mindmap | diagram | superpage | plugin";
 const CLI_DEFAULT_LIMIT: usize = 50;
 const CLI_MAX_LIMIT: usize = 200;
 const ANTHROPIC_PROVIDER: &str = "anthropic";
@@ -201,11 +206,26 @@ pub(crate) async fn call(state: &AppState, actor: &Actor, name: &str, args: &Val
         "ai_chat" => ai_chat(state, owner, args).await,
         // Conversion / export
         "export" => export_tool(args).await,
+        // Plugins (Phase 16): the authoring/propose surface. An agent can
+        // scaffold, validate, sandbox-test, submit (forced draft), inspect,
+        // invoke (enabled only), export, and uninstall — but approve/enable
+        // are PORTAL-ONLY REST verbs, deliberately absent from this catalog,
+        // and `plugins_uninstall` is refused for Baitler-spawned runs at the
+        // protocol layer (see `mcp::handle_tools_call`).
+        "plugins_scaffold" => plugins_scaffold(state, args),
+        "plugins_validate" => plugins_validate(state, args),
+        "plugins_test" => plugins_test(state, actor, args).await,
+        "plugins_create" => plugins_create(state, actor, args).await,
+        "plugins_list" => plugins_list(state, owner, args).await,
+        "plugins_get" => plugins_get(state, owner, args).await,
+        "plugins_invoke" => plugins_invoke(state, actor, args).await,
+        "plugins_export" => plugins_export(state, owner, args).await,
+        "plugins_uninstall" => plugins_uninstall(state, owner, args).await,
         // Plugin-provided tools (Phase 16): resolved by the runtime registry,
-        // not this static match. The registry is empty until the 16.B loader
-        // lands, so today this yields the same UnknownTool as before the seam.
+        // not this static match — enabled plugins' tools dispatch into the
+        // sandboxed runtime; anything unresolved is an unknown tool.
         n if n.starts_with(crate::plugins::TOOL_PREFIX) => {
-            state.plugins.dispatch(actor, n, args).await
+            state.plugins.dispatch(state, actor, n, args).await
         }
         _ => Err(ToolError::UnknownTool),
     }
@@ -2516,6 +2536,361 @@ async fn workspace_copy(state: &AppState, args: &Value) -> ToolResult {
     Ok(out)
 }
 
+// ── Plugins (Phase 16) ────────────────────────────────────────────────────────
+
+/// Every `plugins_*` tool requires the system to be switched on — mirroring the
+/// `workspace_*` "no roots configured" precedent of advertise-always,
+/// clear-error-when-unconfigured.
+fn plugins_guard(state: &AppState) -> Result<(), ToolError> {
+    if state.config.plugins.enabled {
+        Ok(())
+    } else {
+        Err(invalid(
+            "the plugin system is disabled — set PLUGINS_ENABLED=true in the backend \
+             environment (and build with `--features plugins` to execute plugin code)",
+        ))
+    }
+}
+
+/// Decode + sanity-check a Base64 WASM argument. Empty/absent ⇒ no module.
+fn decode_wasm_arg(args: &Value) -> Result<(String, Vec<u8>), ToolError> {
+    let Some(b64) = opt_trimmed(args, "wasm_b64") else {
+        return Ok((String::new(), Vec::new()));
+    };
+    if b64.len() > MAX_BLOB {
+        return Err(invalid(format!(
+            "wasm_b64 larger than {MAX_BLOB} bytes — plugin modules should be far smaller"
+        )));
+    }
+    let bytes = b64::decode(&b64).map_err(|e| invalid(format!("wasm_b64 is not Base64: {e}")))?;
+    if bytes.len() < 8 || &bytes[0..4] != b"\0asm" {
+        return Err(invalid(
+            "wasm_b64 does not decode to a WASM module (missing \\0asm magic)",
+        ));
+    }
+    Ok((b64, bytes))
+}
+
+/// Parse + fully validate a `manifest` argument; issues come back as the
+/// structured error list (`plugins_validate` returns them as data instead).
+fn manifest_arg(
+    args: &Value,
+    has_wasm: bool,
+) -> Result<(plugin_manifest::Manifest, String, Vec<String>), Vec<plugin_manifest::Issue>> {
+    let raw = args.get("manifest").cloned().unwrap_or(Value::Null);
+    let parsed = plugin_manifest::parse(&raw).map_err(|i| vec![i])?;
+    let issues = plugin_manifest::validate(&parsed, has_wasm);
+    if !issues.is_empty() {
+        return Err(issues);
+    }
+    let kinds = plugin_manifest::kinds(&parsed);
+    let json =
+        serde_json::to_string(&parsed).expect("a deserialized manifest always re-serializes");
+    Ok((parsed, json, kinds))
+}
+
+fn issues_value(issues: &[plugin_manifest::Issue]) -> Value {
+    json!(issues
+        .iter()
+        .map(|i| json!({ "path": i.path, "msg": i.msg, "hint": i.hint }))
+        .collect::<Vec<_>>())
+}
+
+/// Scaffold: a ready-to-edit manifest + Extism JS/TS guest skeleton + build
+/// steps. Pure helper — writes nothing.
+fn plugins_scaffold(state: &AppState, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let name = clean_name(&req_str(args, "name")?)?;
+    let kind = opt_trimmed(args, "kind").unwrap_or_else(|| "mcp_tool".to_string());
+    if !plugin_manifest::KINDS.contains(&kind.as_str()) {
+        return Err(invalid(format!(
+            "invalid kind `{kind}` (expected one of: {})",
+            plugin_manifest::KINDS.join(", ")
+        )));
+    }
+    let slug = crate::slug::slugify(&name, "plugin");
+    let tool_name = slug.replace('-', "_");
+
+    let mut manifest = json!({
+        "name": name,
+        "version": "0.1.0",
+        "description": "TODO: one paragraph; indexed for knowledge_search",
+        "capabilities": {
+            "host_fns": ["log"],
+            "memory_max_pages": 256,
+            "timeout_ms": 2000
+        }
+    });
+    match kind.as_str() {
+        "mcp_tool" => {
+            manifest["tools"] = json!([{
+                "name": tool_name,
+                "export": "run",
+                "description": "TODO: what this tool does, for the model",
+                "input_schema": { "type": "object", "properties": {
+                    "text": { "type": "string", "description": "TODO" }
+                }, "required": ["text"] }
+            }]);
+        }
+        "api_endpoint" => {
+            manifest["endpoints"] = json!([{ "method": "POST", "path": "run", "export": "run" }]);
+        }
+        _ => {
+            manifest["ui"] = json!([{
+                "slot": "detail", "key": slug, "label": name, "entry": "ui/index.html"
+            }]);
+        }
+    }
+
+    let source = "// plugin.js — Extism JS guest (compile: `extism-js plugin.js -o plugin.wasm`).\n\
+         // Granted host fns are reached via Host.getFunctions(); all I/O is JSON strings.\n\
+         \n\
+         function run() {\n\
+         \x20 const input = JSON.parse(Host.inputString() || \"{}\");\n\
+         \n\
+         \x20 // Call a granted host fn (it must also be listed in capabilities.host_fns):\n\
+         \x20 // const { kn_search } = Host.getFunctions();\n\
+         \x20 // const off = kn_search(Memory.fromString(JSON.stringify({ q: \"butler\" })).offset);\n\
+         \x20 // const res = JSON.parse(Memory.find(off).readString());\n\
+         \n\
+         \x20 Host.outputString(JSON.stringify({ ok: true, echo: input }));\n\
+         \x20 return 0;\n\
+         }\n\
+         \n\
+         module.exports = { run };\n"
+        .to_string();
+
+    Ok(json!({
+        "manifest": manifest,
+        "source": source,
+        "language": "javascript",
+        "build": "install extism-js (needs Binaryen on PATH): \
+                  `curl -O https://raw.githubusercontent.com/extism/js-pdk/main/install.sh && bash install.sh` \
+                  — details: https://github.com/extism/js-pdk; \
+                  then: extism-js plugin.js -o plugin.wasm; base64 plugin.wasm",
+        "host_fns": plugin_manifest::HOST_FNS,
+        "next_steps": [
+            "edit the manifest + source",
+            "plugins_validate { manifest, wasm_b64 }",
+            "plugins_test { manifest, wasm_b64, export: \"run\", input: {…} }",
+            "plugins_create { manifest, wasm_b64 } — lands as a draft for human review",
+            "ask the user to approve + enable it in the portal; tools appear next session"
+        ]
+    }))
+}
+
+/// Static validation with structured diagnostics — the fast iteration loop.
+/// Issues are DATA (not a tool error), so the agent reads and fixes them.
+fn plugins_validate(state: &AppState, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let (_, wasm_bytes) = decode_wasm_arg(args)?;
+    match manifest_arg(args, !wasm_bytes.is_empty()) {
+        Ok((parsed, _, kinds)) => Ok(json!({
+            "valid": true,
+            "errors": [],
+            "kinds": kinds,
+            "slug": crate::slug::slugify(&parsed.name, "plugin"),
+            "wasm_bytes": wasm_bytes.len(),
+        })),
+        Err(issues) => Ok(json!({ "valid": false, "errors": issues_value(&issues) })),
+    }
+}
+
+/// Run one export in a throwaway sandbox: no persistence, no registry, no row.
+/// Failures come back as data (`ok:false`) so the authoring agent iterates.
+async fn plugins_test(state: &AppState, actor: &Actor, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let (_, wasm_bytes) = decode_wasm_arg(args)?;
+    let (parsed, _, _) = match manifest_arg(args, !wasm_bytes.is_empty()) {
+        Ok(ok) => ok,
+        Err(issues) => {
+            return Ok(json!({ "ok": false, "errors": issues_value(&issues) }));
+        }
+    };
+    let export = req_str(args, "export")?;
+    let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+    Ok(crate::plugins::test_run(state, actor, &parsed, wasm_bytes, &export, &input).await?)
+}
+
+/// Submit a plugin as a **forced draft** (status + review = draft regardless of
+/// args — stricter than `clean_review`). `replace=true` re-authors an existing
+/// slug: bundle swapped, version bumped, knocked back to draft, unloaded.
+async fn plugins_create(state: &AppState, actor: &Actor, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let (wasm_b64, wasm_bytes) = decode_wasm_arg(args)?;
+    let (parsed, manifest_json, kinds) = match manifest_arg(args, !wasm_bytes.is_empty()) {
+        Ok(ok) => ok,
+        Err(issues) => {
+            return Err(invalid(format!(
+                "manifest is invalid — fix these and retry (plugins_validate gives the same \
+                 list): {}",
+                issues_value(&issues)
+            )));
+        }
+    };
+    let replace = opt_bool(args, "replace").unwrap_or(false);
+    // A Baitler-spawned run may PROPOSE new plugins and re-author its own
+    // un-approved drafts, but must not overwrite a human-vetted artifact: a
+    // replace of an approved/enabled plugin swaps the bundle under a trusted
+    // slug AND unloads the live capability — the destructive class runs are
+    // already refused (plugins_uninstall).
+    if replace && actor.run_id.is_some() {
+        let slug = crate::slug::slugify(&parsed.name, "plugin");
+        if let Some(existing) = plugins_repo::get_by_slug(&state.db, &actor.owner, &slug).await? {
+            if matches!(existing.status.as_str(), "approved" | "enabled") {
+                return Err(invalid(format!(
+                    "plugin `{slug}` is `{}` (human-approved) — a run cannot replace an \
+                     installed plugin's bundle. Propose a NEW plugin under a different name \
+                     and let the user manage the upgrade in the portal.",
+                    existing.status
+                )));
+            }
+        }
+    }
+    let row = plugins_repo::create_plugin(
+        &state.db,
+        &actor.owner,
+        &parsed,
+        &manifest_json,
+        &kinds,
+        &wasm_b64,
+        &wasm_bytes,
+        plugins_repo::Author {
+            agent: actor.agent.as_deref(),
+            run_id: actor.run_id.as_deref(),
+        },
+        replace,
+    )
+    .await?;
+    // A replaced plugin is back in draft: it must not stay live.
+    state.plugins.unload(&actor.owner, &row.slug);
+    Ok(serde_json::to_value(PluginDto::from(row)).expect("dto serializes"))
+}
+
+async fn plugins_list(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let status = opt_trimmed(args, "status");
+    if let Some(s) = &status {
+        if !PLUGIN_STATUSES.contains(&s.as_str()) {
+            return Err(invalid(format!(
+                "invalid status `{s}` (expected one of: {})",
+                PLUGIN_STATUSES.join(", ")
+            )));
+        }
+    }
+    let q = opt_trimmed(args, "q");
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(DEFAULT_LIMIT)
+        .min(MAX_LIMIT);
+    let offset = opt_usize(args, "offset").unwrap_or(0);
+    let rows = plugins_repo::list_plugins(
+        &state.db,
+        owner,
+        status.as_deref(),
+        q.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    let plugins: Vec<Value> = rows
+        .into_iter()
+        .map(|r| serde_json::to_value(PluginDto::from(r)).expect("dto serializes"))
+        .collect();
+    Ok(json!({ "plugins": plugins }))
+}
+
+async fn plugins_get(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let key = req_str(args, "slug")?;
+    let row = plugin_by_slug_or_id(state, owner, &key).await?;
+    Ok(serde_json::to_value(PluginDto::from(row)).expect("dto serializes"))
+}
+
+/// Invoke an **enabled** plugin tool by `(slug, tool)` — the same execution
+/// path as the namespaced `plugin__{slug}__{tool}` advertised in tools/list.
+async fn plugins_invoke(state: &AppState, actor: &Actor, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let slug = req_str(args, "slug")?;
+    let tool = req_str(args, "tool")?;
+    let input = args.get("input").cloned().unwrap_or_else(|| json!({}));
+    match state
+        .plugins
+        .invoke_tool(state, actor, &slug, &tool, &input)
+        .await
+    {
+        Err(ToolError::UnknownTool) => {
+            // Not loaded — explain WHY so the agent knows the next step.
+            match plugins_repo::get_by_slug(&state.db, &actor.owner, &slug).await? {
+                Some(row) if row.status != "enabled" => Err(invalid(format!(
+                    "plugin `{slug}` is `{}` — it runs only once the user approves and \
+                     enables it in the portal (there is no MCP verb for that)",
+                    row.status
+                ))),
+                Some(_) => Err(invalid(format!(
+                    "plugin `{slug}` is enabled but does not declare tool `{tool}`"
+                ))),
+                None => Err(invalid(format!(
+                    "no plugin with slug `{slug}` — pass the SLUG (e.g. csv-stats), \
+                     not the id; plugins_list shows both"
+                ))),
+            }
+        }
+        other => other,
+    }
+}
+
+/// Resolve a `slug` argument that may actually be a uuid (agents tend to pass
+/// back the `id` that `plugins_create` returned) — mirror `plugins_get`.
+async fn plugin_by_slug_or_id(
+    state: &AppState,
+    owner: &str,
+    key: &str,
+) -> Result<crate::plugins::model::PluginRow, ToolError> {
+    match plugins_repo::get_by_slug(&state.db, owner, key).await? {
+        Some(row) => Ok(row),
+        None => plugins_repo::get_plugin(&state.db, owner, key)
+            .await?
+            .ok_or_else(not_found),
+    }
+}
+
+/// Export the full bundle for backup/transfer: manifest + wasm + digest.
+async fn plugins_export(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let slug = req_str(args, "slug")?;
+    let row = plugin_by_slug_or_id(state, owner, &slug).await?;
+    let wasm_b64 = plugins_repo::get_wasm_b64(&state.db, owner, &row.uuid)
+        .await?
+        .unwrap_or_default();
+    let manifest: Value = serde_json::from_str(&row.manifest).unwrap_or(Value::Null);
+    Ok(json!({
+        "name": row.name,
+        "slug": row.slug,
+        "version": row.version,
+        "manifest": manifest,
+        "wasm_b64": wasm_b64,
+        "sha256": row.bundle_sha256,
+    }))
+}
+
+/// Uninstall: scrub knowledge links, cascade `plugin_kv`, delete, unload.
+/// Refused for Baitler-spawned runs at the protocol layer (`mcp/mod.rs`).
+async fn plugins_uninstall(state: &AppState, owner: &str, args: &Value) -> ToolResult {
+    plugins_guard(state)?;
+    let slug = req_str(args, "slug")?;
+    let row = plugin_by_slug_or_id(state, owner, &slug).await?;
+    let deleted = plugins_repo::delete_plugin(&state.db, owner, &row.uuid)
+        .await?
+        .ok_or_else(not_found)?;
+    state.plugins.unload(owner, &deleted.slug);
+    Ok(json!({
+        "id": deleted.uuid,
+        "name": deleted.name,
+        "slug": deleted.slug,
+        "deleted": true,
+    }))
+}
+
 // ── Tool catalog (advertised via `tools/list`) ────────────────────────────────
 
 /// Build one tool definition.
@@ -3347,6 +3722,98 @@ fn static_definitions() -> Vec<Value> {
             }),
             &["content", "source", "target"],
         ),
+        // Plugins (Phase 16): author → validate → test → submit (forced draft).
+        // Approve/enable are portal-only; new plugin tools appear in tools/list
+        // as plugin__{slug}__{tool} on the NEXT session after the user enables.
+        def(
+            "plugins_scaffold",
+            "Scaffold a new plugin: a ready-to-edit manifest + Extism JS guest skeleton + \
+             build steps. Pure helper, writes nothing.",
+            json!({
+                "name": str_schema("human-readable plugin name (slug is derived)"),
+                "kind": str_schema("mcp_tool (default) | api_endpoint | ui_component"),
+            }),
+            &["name"],
+        ),
+        def(
+            "plugins_validate",
+            "Statically validate a plugin manifest (+ optional WASM): deny-unknown fields, \
+             capability ceiling, schema shapes. Returns structured {path,msg,hint} errors \
+             as data for fast iteration.",
+            json!({
+                "manifest": json!({ "type": "object", "description": "the plugin manifest" }),
+                "wasm_b64": str_schema("Base64 Extism guest module (optional here)"),
+            }),
+            &["manifest"],
+        ),
+        def(
+            "plugins_test",
+            "Run one export in a THROWAWAY sandbox: same runtime and grants, but nothing \
+             persists (in-memory kv; content writes refused). Failures return as data \
+             ({ok:false,error}) so the authoring loop self-corrects.",
+            json!({
+                "manifest": json!({ "type": "object", "description": "the plugin manifest" }),
+                "wasm_b64": str_schema("Base64 Extism guest module"),
+                "export": str_schema("guest export to call"),
+                "input": json!({ "type": "object", "description": "JSON input for the export" }),
+            }),
+            &["manifest", "wasm_b64", "export"],
+        ),
+        def(
+            "plugins_create",
+            "Submit a plugin as a FORCED draft (status+review=draft regardless of args) for \
+             human review in the portal. replace=true upgrades an existing slug: bundle \
+             swapped, version bumped, knocked back to draft (re-review).",
+            json!({
+                "manifest": json!({ "type": "object", "description": "the validated manifest" }),
+                "wasm_b64": str_schema("Base64 Extism guest module (required if tools/endpoints declared)"),
+                "replace": bool_schema("upgrade an existing slug in place (default false)"),
+            }),
+            &["manifest"],
+        ),
+        def(
+            "plugins_list",
+            "List installed/proposed plugins with status, kinds, and provenance.",
+            json!({
+                "status": str_schema("draft | approved | enabled | disabled | rejected"),
+                "q": str_schema("substring filter over name/description"),
+                "limit": int_schema("max results (default 100, max 500)"),
+                "offset": int_schema("pagination offset"),
+            }),
+            &[],
+        ),
+        def(
+            "plugins_get",
+            "Fetch one plugin by slug (or id), including its manifest — never the WASM.",
+            json!({ "slug": str_schema("plugin slug (or uuid)") }),
+            &["slug"],
+        ),
+        def(
+            "plugins_invoke",
+            "Invoke an ENABLED plugin's tool by (slug, tool) — same execution path as the \
+             namespaced plugin__{slug}__{tool} tools. Drafts must be approved+enabled by \
+             the user in the portal first.",
+            json!({
+                "slug": str_schema("plugin slug"),
+                "tool": str_schema("declared tool name"),
+                "input": json!({ "type": "object", "description": "JSON arguments" }),
+            }),
+            &["slug", "tool"],
+        ),
+        def(
+            "plugins_export",
+            "Export a plugin's full bundle (manifest + wasm_b64 + sha256) for backup or \
+             transfer.",
+            json!({ "slug": str_schema("plugin slug (or id)") }),
+            &["slug"],
+        ),
+        def(
+            "plugins_uninstall",
+            "Uninstall a plugin: scrub its knowledge links, cascade its kv store, delete \
+             the row, unload it. NOT available to Baitler-spawned agent runs.",
+            json!({ "slug": str_schema("plugin slug (or id)") }),
+            &["slug"],
+        ),
     ]
 }
 
@@ -3447,6 +3914,15 @@ mod tests {
             "ai_providers",
             "ai_chat",
             "export",
+            "plugins_scaffold",
+            "plugins_validate",
+            "plugins_test",
+            "plugins_create",
+            "plugins_list",
+            "plugins_get",
+            "plugins_invoke",
+            "plugins_export",
+            "plugins_uninstall",
         ];
         for name in &advertised {
             assert!(known.contains(&name.as_str()), "undispatched tool: {name}");
