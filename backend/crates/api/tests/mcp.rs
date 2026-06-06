@@ -36,6 +36,7 @@ fn test_config(mcp: McpConfig) -> Config {
         },
         mcp,
         cli: CliConfig::default(),
+        workspace_roots: Vec::new(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }
@@ -815,7 +816,7 @@ async fn files_import_reads_local_files_server_side() {
     std::fs::write(root.join("b.txt"), b"hello world").unwrap();
 
     let mut cfg = test_config(enabled());
-    cfg.cli.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    cfg.workspace_roots = vec![root.to_string_lossy().into_owned()];
     let state = baitler_api::build_state(cfg).await.expect("state");
     let app = baitler_api::build_app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1044,5 +1045,276 @@ async fn mindmaps_and_diagrams_mcp_surface() {
     assert!(
         backlinks["links"].as_array().unwrap().is_empty(),
         "link should be scrubbed when the mindmap is deleted: {backlinks}"
+    );
+}
+
+/// Call a tool expecting an `isError` result; returns the error text.
+async fn tool_call_err(
+    client: &Client,
+    base: &str,
+    headers: &[(&str, &str)],
+    name: &str,
+    args: Value,
+) -> String {
+    let mut req = client.post(format!("{base}/mcp")).json(&json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": name, "arguments": args }
+    }));
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let body: Value = req
+        .send()
+        .await
+        .expect("request")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        body["result"]["isError"], true,
+        "tool `{name}` unexpectedly succeeded: {body}"
+    );
+    body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content")
+        .to_string()
+}
+
+#[tokio::test]
+async fn workspace_tools_full_file_management_roundtrip() {
+    let root = std::env::temp_dir().join("baitler-mcp-ws-test");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+
+    let mut cfg = test_config(enabled());
+    cfg.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    let state = baitler_api::build_state(cfg).await.expect("state");
+    let app = baitler_api::build_app(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let client = Client::new();
+    let agent = "hermes";
+    let p = |pb: &std::path::Path| pb.to_string_lossy().into_owned();
+
+    // The configured root is advertised.
+    let roots = tool_call(&client, &base, agent, "workspace_roots", json!({})).await;
+    assert_eq!(roots["roots"][0]["exists"], true);
+
+    // mkdir → write → read round-trip.
+    let dir = root.join("docs");
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_mkdir",
+        json!({ "path": p(&dir) }),
+    )
+    .await;
+    let file = dir.join("note.txt");
+    let w = tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_write",
+        json!({ "path": p(&file), "content": "hello workspace" }),
+    )
+    .await;
+    assert_eq!(w["created"], true);
+    let r = tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_read",
+        json!({ "path": p(&file) }),
+    )
+    .await;
+    assert_eq!(r["encoding"], "utf8");
+    assert_eq!(r["content"], "hello workspace");
+
+    // Existing file is protected unless overwrite=true.
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[],
+        "workspace_write",
+        json!({ "path": p(&file), "content": "clobber" }),
+    )
+    .await;
+    assert!(err.contains("overwrite"), "got: {err}");
+
+    // info: file + directory (with entry counts).
+    let fi = tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_info",
+        json!({ "path": p(&file) }),
+    )
+    .await;
+    assert_eq!(fi["kind"], "file");
+    assert_eq!(fi["size"], 15);
+    let di = tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_info",
+        json!({ "path": p(&dir) }),
+    )
+    .await;
+    assert_eq!(di["kind"], "dir");
+    assert_eq!(di["entries"]["files"], 1);
+
+    // list shows the file.
+    let l = tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_list",
+        json!({ "path": p(&dir) }),
+    )
+    .await;
+    let entries = l["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["name"], "note.txt");
+    assert_eq!(entries[0]["kind"], "file");
+
+    // copy, then move (= rename).
+    let copy = root.join("copy.txt");
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_copy",
+        json!({ "from": p(&file), "to": p(&copy) }),
+    )
+    .await;
+    let renamed = dir.join("renamed.txt");
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_move",
+        json!({ "from": p(&file), "to": p(&renamed) }),
+    )
+    .await;
+    assert!(!file.exists() && renamed.exists());
+
+    // delete the copy; rmdir requires recursive for a non-empty dir.
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_delete",
+        json!({ "path": p(&copy) }),
+    )
+    .await;
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[],
+        "workspace_rmdir",
+        json!({ "path": p(&dir) }),
+    )
+    .await;
+    assert!(err.contains("recursive"), "got: {err}");
+    tool_call(
+        &client,
+        &base,
+        agent,
+        "workspace_rmdir",
+        json!({ "path": p(&dir), "recursive": true }),
+    )
+    .await;
+    assert!(!dir.exists());
+
+    // The allow-listed root itself is protected.
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[],
+        "workspace_rmdir",
+        json!({ "path": p(&root), "recursive": true }),
+    )
+    .await;
+    assert!(err.contains("root"), "got: {err}");
+
+    // Paths outside the roots are refused, for reads and writes alike.
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[],
+        "workspace_read",
+        json!({ "path": "/etc/passwd" }),
+    )
+    .await;
+    assert!(err.contains("allowed root"), "got: {err}");
+    let outside = std::env::temp_dir().join("baitler-ws-escape.txt");
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[],
+        "workspace_write",
+        json!({ "path": outside.to_string_lossy(), "content": "x" }),
+    )
+    .await;
+    assert!(err.contains("allowed root"), "got: {err}");
+
+    // Mutations were attributed in the activity log.
+    let activity = tool_call(
+        &client,
+        &base,
+        agent,
+        "activity_list",
+        json!({ "agent": agent }),
+    )
+    .await;
+    let actions: Vec<&str> = activity["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["action"].as_str())
+        .collect();
+    for expected in [
+        "workspace.mkdir",
+        "workspace.write",
+        "workspace.copy",
+        "workspace.move",
+        "workspace.delete",
+        "workspace.rmdir",
+    ] {
+        assert!(
+            actions.contains(&expected),
+            "missing {expected} in {actions:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn workspace_tools_are_denied_to_agent_runs_and_without_roots() {
+    // With NO roots configured the tools exist but refuse to operate.
+    let base = spawn_app(enabled()).await;
+    let client = Client::new();
+    let err = tool_call_err(&client, &base, &[], "workspace_roots", json!({})).await;
+    assert!(err.contains("WORKSPACE_ROOTS"), "got: {err}");
+
+    // A Baitler-spawned agent run (X-Baitler-Run) is rejected BEFORE dispatch —
+    // its disk access stays the per-run read-only grant.
+    let err = tool_call_err(
+        &client,
+        &base,
+        &[
+            ("X-Baitler-Agent", "claude-code"),
+            ("X-Baitler-Run", "r-123"),
+        ],
+        "workspace_read",
+        json!({ "path": "/anything" }),
+    )
+    .await;
+    assert!(
+        err.contains("not available to Baitler-spawned agent runs"),
+        "got: {err}"
     );
 }

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::AppResult;
 
-const ACTIVITY_SELECT: &str = "SELECT uuid, owner, agent, action, target_type, target_id, \
+const ACTIVITY_SELECT: &str = "SELECT uuid, owner, agent, run_id, action, target_type, target_id, \
     target_title, project_id, summary, type::string(created_at) AS created_at FROM activity";
 
 /// An `activity` row as projected by the repository.
@@ -21,6 +21,8 @@ pub struct ActivityRow {
     pub uuid: String,
     pub owner: String,
     pub agent: Option<String>,
+    /// The `cli_run` uuid this action belongs to (from `X-Baitler-Run`), if any.
+    pub run_id: Option<String>,
     pub action: String,
     pub target_type: String,
     pub target_id: String,
@@ -35,6 +37,7 @@ pub struct ActivityRow {
 pub struct ActivityDto {
     pub id: String,
     pub agent: Option<String>,
+    pub run_id: Option<String>,
     pub action: String,
     pub target_type: String,
     pub target_id: String,
@@ -49,6 +52,7 @@ impl From<ActivityRow> for ActivityDto {
         Self {
             id: r.uuid,
             agent: r.agent,
+            run_id: r.run_id,
             action: r.action,
             target_type: r.target_type,
             target_id: r.target_id,
@@ -133,6 +137,13 @@ pub fn entry_for(tool: &str, result: &Value) -> Option<ActivityEntry> {
         "projects_remove_item" => ("project.remove_item", "project"),
         "knowledge_link" => ("knowledge.link", "link"),
         "knowledge_unlink" => ("knowledge.unlink", "link"),
+        // Local-disk workspace tools (external MCP clients; never agent runs).
+        "workspace_write" => ("workspace.write", "workspace"),
+        "workspace_mkdir" => ("workspace.mkdir", "workspace"),
+        "workspace_delete" => ("workspace.delete", "workspace"),
+        "workspace_rmdir" => ("workspace.rmdir", "workspace"),
+        "workspace_move" => ("workspace.move", "workspace"),
+        "workspace_copy" => ("workspace.copy", "workspace"),
         // Everything else (list/get/read/search/export/health/ai_*) is read-only.
         _ => return None,
     };
@@ -155,21 +166,25 @@ pub fn entry_for(tool: &str, result: &Value) -> Option<ActivityEntry> {
     })
 }
 
-/// Append one activity row. `agent` is `None` for human/web actions.
+/// Append one activity row. `agent` is `None` for human/web actions; `run_id`
+/// is the originating `cli_run` uuid when the action came from a Baitler-spawned
+/// agent run (the loopback MCP call's `X-Baitler-Run` header).
 pub async fn record(
     db: &Db,
     owner: &str,
     agent: Option<&str>,
+    run_id: Option<&str>,
     a: &NewActivity<'_>,
 ) -> AppResult<()> {
     db.query(
-        "CREATE activity CONTENT { uuid: $uuid, owner: $owner, agent: $agent, action: $action, \
-         target_type: $tt, target_id: $tid, target_title: $title, project_id: $pid, \
-         summary: $summary }",
+        "CREATE activity CONTENT { uuid: $uuid, owner: $owner, agent: $agent, run_id: $run, \
+         action: $action, target_type: $tt, target_id: $tid, target_title: $title, \
+         project_id: $pid, summary: $summary }",
     )
     .bind(("uuid", Uuid::new_v4().to_string()))
     .bind(("owner", owner.to_string()))
     .bind(("agent", agent.map(str::to_string)))
+    .bind(("run", run_id.map(str::to_string)))
     .bind(("action", a.action.to_string()))
     .bind(("tt", a.target_type.to_string()))
     .bind(("tid", a.target_id.to_string()))
@@ -181,24 +196,34 @@ pub async fn record(
     Ok(())
 }
 
-/// List activity newest-first, optionally filtered by project, agent, or a
-/// minimum ISO-8601 timestamp (`since`).
+/// Optional filters for [`list`]; all default to "no filter".
+#[derive(Debug, Default)]
+pub struct ActivityFilter<'a> {
+    pub project_id: Option<&'a str>,
+    pub agent: Option<&'a str>,
+    pub run_id: Option<&'a str>,
+    /// Minimum ISO-8601 timestamp.
+    pub since: Option<&'a str>,
+}
+
+/// List activity newest-first under the given [`ActivityFilter`].
 pub async fn list(
     db: &Db,
     owner: &str,
-    project_id: Option<&str>,
-    agent: Option<&str>,
-    since: Option<&str>,
+    filter: &ActivityFilter<'_>,
     limit: usize,
 ) -> AppResult<Vec<ActivityRow>> {
     let mut clauses = vec!["owner = $owner".to_string()];
-    if project_id.is_some() {
+    if filter.project_id.is_some() {
         clauses.push("project_id = $pid".to_string());
     }
-    if agent.is_some() {
+    if filter.agent.is_some() {
         clauses.push("agent = $agent".to_string());
     }
-    if since.is_some() {
+    if filter.run_id.is_some() {
+        clauses.push("run_id = $run".to_string());
+    }
+    if filter.since.is_some() {
         clauses.push("created_at >= type::datetime($since)".to_string());
     }
     let sql = format!(
@@ -209,13 +234,16 @@ pub async fn list(
         .query(sql)
         .bind(("owner", owner.to_string()))
         .bind(("limit", limit as i64));
-    if let Some(p) = project_id {
+    if let Some(p) = filter.project_id {
         query = query.bind(("pid", p.to_string()));
     }
-    if let Some(a) = agent {
+    if let Some(a) = filter.agent {
         query = query.bind(("agent", a.to_string()));
     }
-    if let Some(s) = since {
+    if let Some(r) = filter.run_id {
+        query = query.bind(("run", r.to_string()));
+    }
+    if let Some(s) = filter.since {
         query = query.bind(("since", s.to_string()));
     }
     let mut res = query.await?.check()?;

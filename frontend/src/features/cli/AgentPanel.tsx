@@ -1,51 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Bot, Play, Plus, Save, Square, Wrench } from 'lucide-react';
+import { Play, Plus, Save, Square } from 'lucide-react';
 
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Markdown } from '@/components/ui/markdown';
 import { Modal } from '@/components/ui/modal';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
 import { useProviders } from '@/features/ai/api';
 import { cn } from '@/lib/cn';
 import {
-  CLI_ROOT,
   errorMessage,
   saveResultAs,
-  streamRun,
-  useCancelRun,
   useCliStatus,
   useProjectOptions,
   useRun,
   useRuns,
   type SaveTarget,
 } from './api';
-import type { AgentProvider, RunEvent, ToolScope } from './types';
+import { EventRow } from './EventRow';
+import { resultOf, useAgentChat } from './useAgentChat';
+import type { AgentProvider, ToolScope } from './types';
 
 const SELECT_CLASS = 'h-10 rounded-md border border-input bg-background px-2 text-sm';
-
-/** One exchange in the conversation: the user's prompt + the agent's events. */
-interface Turn {
-  prompt: string;
-  events: RunEvent[];
-  streaming: boolean;
-}
-
-/** A stable id for a chat; all its turns share one working dir on the server. */
-function newConversationId(): string {
-  return globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function resultOf(events: RunEvent[]): Extract<RunEvent, { type: 'result' }> | undefined {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e?.type === 'result') return e;
-  }
-  return undefined;
-}
 
 export interface AgentPanelProps {
   /** Rendered inside the right-hand dock (compact, fills its pane) vs. full page. */
@@ -64,12 +40,10 @@ export interface AgentPanelProps {
  * orients the agent to the page the user is viewing.
  */
 export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
-  const qc = useQueryClient();
   const { data: providers = [] } = useProviders();
   const { data: projects = [] } = useProjectOptions();
   const { data: runs = [] } = useRuns();
   const { data: status } = useCliStatus();
-  const cancelRun = useCancelRun();
 
   const [prompt, setPrompt] = useState('');
   const [provider, setProvider] = useState<AgentProvider>('claude_code');
@@ -79,21 +53,14 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
   const [maxTurns, setMaxTurns] = useState('');
   const [workspaceDir, setWorkspaceDir] = useState('');
 
-  // Conversation state.
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [unavailable, setUnavailable] = useState<string | null>(null);
+  const chat = useAgentChat();
+  const { turns, sessionId, streaming, error, unavailable } = chat;
 
   // Resume a previous run as the start of a chat.
   const [openId, setOpenId] = useState<string | null>(null);
   const { data: openRun } = useRun(openId);
   const seededRef = useRef<string | null>(null);
 
-  const abortRef = useRef<AbortController | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   const anthropicModels = useMemo(
@@ -120,22 +87,8 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
   useEffect(() => {
     if (!openRun || seededRef.current === openRun.id) return;
     seededRef.current = openRun.id;
-    const events: RunEvent[] = [];
-    if (openRun.result_text) events.push({ type: 'assistant', text: openRun.result_text });
-    if (openRun.error) events.push({ type: 'error', message: openRun.error });
-    events.push({
-      type: 'result',
-      text: openRun.result_text ?? '',
-      session_id: openRun.session_id,
-      num_turns: openRun.num_turns,
-      cost_usd: openRun.cost_usd,
-      is_error: openRun.status === 'failed',
-    });
-    setTurns([{ prompt: openRun.prompt, events, streaming: false }]);
-    setSessionId(openRun.session_id);
-    // Reuse the run's conversation (same working dir) so we truly resume it;
-    // older runs without one fall back to a fresh conversation.
-    setConversationId(openRun.conversation_id ?? newConversationId());
+    chat.seedFromRun(openRun);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRun]);
 
   // Keep the latest message in view as it streams.
@@ -148,82 +101,22 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
     e.preventDefault();
     const text = prompt.trim();
     if (!text || streaming || blocked) return;
-
-    // Establish (or reuse) the conversation so every turn shares one working dir.
-    const convId = conversationId ?? newConversationId();
-    if (!conversationId) setConversationId(convId);
-
-    const index = turns.length;
-    setTurns((prev) => [...prev, { prompt: text, events: [], streaming: true }]);
     setPrompt('');
-    setError(null);
-    setUnavailable(null);
-    setRunId(null);
-    setStreaming(true);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
     const turnNum = Number.parseInt(maxTurns, 10);
-
-    await streamRun(
-      {
-        prompt: text,
-        provider,
-        context: context || undefined,
-        model: model || undefined,
-        project_id: projectId || undefined,
-        workspace_dir: workspaceDir.trim() || undefined,
-        tool_scope: toolScope,
-        max_turns: Number.isFinite(turnNum) && turnNum > 0 ? turnNum : undefined,
-        // Continue the conversation when we have a prior session; the shared
-        // conversation_id keeps all turns in the same working dir so --resume works.
-        resume_session_id: sessionId || undefined,
-        conversation_id: convId,
-      },
-      {
-        signal: controller.signal,
-        onEvent: (ev) => {
-          if (ev.type === 'run') {
-            setRunId(ev.id);
-            return;
-          }
-          if (ev.type === 'done') {
-            void qc.invalidateQueries({ queryKey: CLI_ROOT });
-            return;
-          }
-          if ((ev.type === 'init' || ev.type === 'result') && ev.session_id) {
-            setSessionId(ev.session_id);
-          }
-          setTurns((prev) =>
-            prev.map((t, i) => (i === index ? { ...t, events: [...t.events, ev] } : t)),
-          );
-        },
-        onError: (message, statusCode) => {
-          setError(message);
-          if (statusCode === 503) setUnavailable(message);
-        },
-      },
-    );
-
-    setStreaming(false);
-    abortRef.current = null;
-    setTurns((prev) => prev.map((t, i) => (i === index ? { ...t, streaming: false } : t)));
-    void qc.invalidateQueries({ queryKey: CLI_ROOT });
-  };
-
-  const stop = () => {
-    if (runId) cancelRun.mutate(runId);
-    else abortRef.current?.abort();
+    await chat.send(text, {
+      provider,
+      context: context || undefined,
+      model: model || undefined,
+      project_id: projectId || undefined,
+      workspace_dir: workspaceDir.trim() || undefined,
+      tool_scope: toolScope,
+      max_turns: Number.isFinite(turnNum) && turnNum > 0 ? turnNum : undefined,
+    });
   };
 
   const newChat = () => {
     if (streaming) return;
-    setTurns([]);
-    setSessionId(null);
-    setConversationId(null);
-    setRunId(null);
-    setError(null);
-    setUnavailable(null);
+    chat.reset();
     setOpenId(null);
     seededRef.current = null;
   };
@@ -286,7 +179,12 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
               ))}
             </select>
           )}
-          <Button variant="ghost" size="sm" onClick={newChat} disabled={streaming || turns.length === 0}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={newChat}
+            disabled={streaming || turns.length === 0}
+          >
             <Plus className="h-4 w-4" aria-hidden="true" />
             New chat
           </Button>
@@ -335,7 +233,10 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
       )}
 
       {/* Composer (chat input) */}
-      <form onSubmit={send} className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
+      <form
+        onSubmit={send}
+        className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3"
+      >
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -427,7 +328,7 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
           />
           <div className="ml-auto">
             {streaming ? (
-              <Button type="button" variant="outline" onClick={stop}>
+              <Button type="button" variant="outline" onClick={chat.stop}>
                 <Square className="h-4 w-4" aria-hidden="true" />
                 Stop
               </Button>
@@ -458,56 +359,6 @@ export function AgentPanel({ embedded = false, context }: AgentPanelProps) {
       </form>
     </div>
   );
-}
-
-function EventRow({ event }: { event: RunEvent }) {
-  switch (event.type) {
-    case 'init':
-      return (
-        <p className="text-xs text-muted-foreground">
-          Session started{event.model ? ` · ${event.model}` : ''}
-        </p>
-      );
-    case 'assistant':
-      return (
-        <div className="flex gap-2">
-          <Bot className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-          <div className="min-w-0 text-sm">
-            <Markdown>{event.text}</Markdown>
-          </div>
-        </div>
-      );
-    case 'tool_use':
-      return (
-        <div className="flex items-center gap-2 text-xs">
-          <Wrench className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-          <span className="font-mono">{event.name}</span>
-          {event.summary && <span className="text-muted-foreground">— {event.summary}</span>}
-        </div>
-      );
-    case 'tool_result':
-      return (
-        <div className="pl-5 text-xs text-muted-foreground">
-          <Badge variant={event.ok ? 'success' : 'danger'}>{event.ok ? 'ok' : 'error'}</Badge>{' '}
-          {event.summary}
-        </div>
-      );
-    case 'result':
-      return (
-        <p className="text-xs text-muted-foreground">
-          Done · {event.num_turns} turn{event.num_turns === 1 ? '' : 's'}
-          {event.cost_usd != null ? ` · $${event.cost_usd.toFixed(4)}` : ''}
-        </p>
-      );
-    case 'error':
-      return (
-        <p className="rounded-md border border-danger/30 bg-danger/10 px-2 py-1 text-xs text-danger">
-          {event.message}
-        </p>
-      );
-    default:
-      return null;
-  }
 }
 
 /** Offer to save a result as a draft Idea / Document / Page. */

@@ -111,4 +111,10 @@ Auto save the canvas.
 
 ## redesign
 
+I'm still looking for a better UI that can help me solve the problem of organizing and interacting with documents, ideas, web pages, diagrams, mindmaps and other content.
+I see baitler as an AI buttler that helps me organize and interact with all of this content in one place.
+So the workflow I see is:
+- I ask it to look at code project, read the code, understand the code, and create a summary of the code.
+- I ask it to look at a folder with documents, read the documents, understand the documents, and create a summary of the documents. It should also reorganize the documents, place them in the baitlers file structure, archive them.
 
+It should annotate, tag, and categorize the content it processes.

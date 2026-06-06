@@ -32,6 +32,7 @@ pub mod storage;
 pub mod superpage;
 pub mod tags;
 pub mod telemetry;
+pub mod workspace;
 
 pub use config::Config;
 pub use state::AppState;
@@ -54,6 +55,12 @@ pub async fn build_state(
 ) -> Result<AppState, Box<dyn std::error::Error + Send + Sync>> {
     let db = db::connect(&config.surreal).await?;
     migrations::run(&db).await?;
+    // Runs are driven by process-local tasks: any row still `running` belongs
+    // to a previous process and would look live forever — fail it now.
+    let orphaned = cli::repo::fail_orphaned_runs(&db).await?;
+    if orphaned > 0 {
+        tracing::warn!(orphaned, "failed orphaned cli runs from a previous process");
+    }
     let storage = build_storage(&config.storage).await?;
     Ok(AppState::new(config, db, storage))
 }

@@ -29,8 +29,8 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
         <ApiStatusBadge />
       </div>
 
-      {/* The standalone /agent route already shows the panel full-width. */}
-      {pathname !== '/agent' && (
+      {/* The standalone /agent route and the butler home already show the panel. */}
+      {pathname !== '/agent' && pathname !== '/' && (
         <Button
           variant={dockOpen ? 'secondary' : 'ghost'}
           size="icon"

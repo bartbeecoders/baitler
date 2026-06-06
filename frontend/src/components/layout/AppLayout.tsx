@@ -7,6 +7,7 @@ import { AgentDock } from '@/features/cli/AgentDock';
 import { cn } from '@/lib/cn';
 import { useAgentDock } from '@/stores/agentDock';
 import { isVisualEditorDetailRoute } from '@/features/objects/editorLayout';
+import { Rail } from './Rail';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 
@@ -24,11 +25,12 @@ export function AppLayout() {
   const triggerRef = useRef<HTMLElement | null>(null);
 
   // The docked agent pane shows on every feature page (the standalone `/agent`
-  // route already *is* the panel, so don't double it up there).
+  // route already *is* the panel, and the butler home `/` is a full-page agent
+  // surface itself, so don't double it up on either).
   const dockOpen = useAgentDock((s) => s.open);
   const dockWidth = useAgentDock((s) => s.width);
   const { pathname } = useLocation();
-  const showDock = dockOpen && pathname !== '/agent';
+  const showDock = dockOpen && pathname !== '/agent' && pathname !== '/';
   const immersive = isVisualEditorDetailRoute(pathname);
 
   const openDrawer = () => {
@@ -85,9 +87,9 @@ export function AppLayout() {
         Skip to content
       </a>
 
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-border bg-card md:block">
-        <Sidebar />
+      {/* Desktop icon rail */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-16 border-r border-border bg-card md:block">
+        <Rail />
       </aside>
 
       {/* Mobile drawer */}
@@ -115,7 +117,7 @@ export function AppLayout() {
 
       <div
         className={cn(
-          'md:pl-72',
+          'md:pl-16',
           showDock && 'lg:[padding-right:var(--agent-dock-w)]',
           immersive && 'flex h-svh flex-col',
         )}

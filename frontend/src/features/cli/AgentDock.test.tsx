@@ -35,7 +35,7 @@ describe('pageContext', () => {
     expect(pageContext('/files/123').label).toBe('Files');
     expect(pageContext('/editor').label).toBe('Documents');
     expect(pageContext('/pages').label).toBe('Pages');
-    expect(pageContext('/').label).toBe('Dashboard');
+    expect(pageContext('/').label).toBe('Butler');
 
     const ctx = pageContext('/ideas').context;
     expect(ctx).toContain('Ideas');

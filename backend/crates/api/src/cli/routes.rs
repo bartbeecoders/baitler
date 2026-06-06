@@ -1,8 +1,11 @@
 //! Owner-scoped HTTP surface for CLI runs (Phase 13.5).
 //!
-//! `POST /cli/runs` starts a run and streams [`RunEvent`]s over SSE (reusing the
-//! Phase 6 `ai/chat` pattern), persisting the terminal outcome onto the row;
-//! `GET /cli/runs` lists, `GET /cli/runs/{id}` fetches, and
+//! `POST /cli/runs` starts a run and streams [`RunEvent`]s over SSE. The run is
+//! **driven by a background task**, not the response stream — a disconnecting
+//! client doesn't kill it; events are buffered in the registry hub and
+//! `GET /cli/runs/{id}/events` re-attaches (atomic replay + live tail) while
+//! the run is active. The terminal outcome is persisted onto the row either
+//! way. `GET /cli/runs` lists, `GET /cli/runs/{id}` fetches, and
 //! `POST /cli/runs/{id}/cancel` aborts an in-flight run. The runner is **off by
 //! default** (503) and serialised to **one active run per owner** (409).
 
@@ -46,13 +49,20 @@ const MAX_PROMPT_LEN: usize = 50_000;
 const MAX_CONTEXT_LEN: usize = 4_000;
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
+/// Cap on activity rows folded into one run report.
+const MAX_REPORT_ARTIFACTS: usize = 500;
+/// Cap on directory entries returned by the workspace browser.
+const MAX_BROWSE_ENTRIES: usize = 200;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/cli/status", get(status))
         .route("/cli/runs", get(list).post(create))
         .route("/cli/runs/{id}", get(get_one))
+        .route("/cli/runs/{id}/events", get(events))
+        .route("/cli/runs/{id}/report", get(report))
         .route("/cli/runs/{id}/cancel", post(cancel))
+        .route("/cli/workspace/browse", get(browse))
 }
 
 /// Run-free readiness for the Agent page: composes config (`enabled`), the
@@ -198,7 +208,7 @@ async fn status(
         ready,
         message,
         providers,
-        workspace_roots: cli.workspace_roots.clone(),
+        workspace_roots: state.config.workspace_roots.clone(),
     }))
 }
 
@@ -249,6 +259,164 @@ async fn get_one(
         .await?
         .ok_or(AppError::NotFound)?;
     Ok(Json(run.into()))
+}
+
+/// What a run actually did to the knowledge base — the "butler report" behind
+/// the portal's run cards. Artifacts are the run's activity rows (provenance,
+/// newest first); `counts` groups them by action (`idea.create`, `file.import`,
+/// …) so the client can render badges without re-deriving.
+#[derive(Debug, Serialize)]
+struct RunReport {
+    run: CliRunSummary,
+    artifacts: Vec<crate::activity::ActivityDto>,
+    counts: std::collections::BTreeMap<String, usize>,
+    total: usize,
+}
+
+/// `GET /cli/runs/{id}/report` — aggregate the run's activity (matched by the
+/// `run_id` stamped on loopback MCP writes) into a report.
+async fn report(
+    State(state): State<AppState>,
+    CurrentOwner(owner): CurrentOwner,
+    Path(id): Path<String>,
+) -> AppResult<Json<RunReport>> {
+    let run = repo::get_run(&state.db, &owner, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let rows = crate::activity::list(
+        &state.db,
+        &owner,
+        &crate::activity::ActivityFilter {
+            run_id: Some(&id),
+            ..Default::default()
+        },
+        MAX_REPORT_ARTIFACTS,
+    )
+    .await?;
+    let mut counts = std::collections::BTreeMap::new();
+    for row in &rows {
+        *counts.entry(row.action.clone()).or_insert(0) += 1;
+    }
+    let total = rows.len();
+    Ok(Json(RunReport {
+        run: run.into(),
+        artifacts: rows.into_iter().map(Into::into).collect(),
+        counts,
+        total,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct BrowseQuery {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BrowseEntry {
+    name: String,
+    path: String,
+}
+
+/// `GET /cli/workspace/browse` — the folder picker behind "point the butler at a
+/// local folder". Without `path`, lists the allow-listed roots; with one, lists
+/// its subdirectories. Every path is validated through the same
+/// canonicalize-under-roots check as a workspace grant, so the picker can never
+/// see outside `CLAUDE_CLI_WORKSPACE_ROOTS`.
+#[derive(Debug, Serialize)]
+struct BrowseResponse {
+    roots: Vec<String>,
+    /// Canonical path being listed (`None` ⇒ the roots themselves).
+    path: Option<String>,
+    /// Canonical parent, present only while it is still under an allowed root.
+    parent: Option<String>,
+    dirs: Vec<BrowseEntry>,
+    truncated: bool,
+}
+
+async fn browse(
+    State(state): State<AppState>,
+    CurrentOwner(_owner): CurrentOwner,
+    Query(q): Query<BrowseQuery>,
+) -> AppResult<Json<BrowseResponse>> {
+    let roots = &state.config.workspace_roots;
+    // Canonical, existing roots only (a stale entry just disappears from the UI).
+    let canon_roots: Vec<String> = roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .filter(|p| p.is_dir())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let requested = q.path.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let Some(path) = requested else {
+        // Top level: the grantable roots, presented as entries.
+        let dirs = canon_roots
+            .iter()
+            .map(|p| BrowseEntry {
+                name: std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.clone()),
+                path: p.clone(),
+            })
+            .collect();
+        return Ok(Json(BrowseResponse {
+            roots: canon_roots,
+            path: None,
+            parent: None,
+            dirs,
+            truncated: false,
+        }));
+    };
+
+    let target = crate::cli::validate_workspace(roots, path).map_err(AppError::BadRequest)?;
+
+    let mut dirs = Vec::new();
+    let mut truncated = false;
+    let mut rd = tokio::fs::read_dir(&target)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("could not read directory: {e}")))?;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Hidden entries (.git, .cache, …) are noise for a folder grant.
+        if name.starts_with('.') {
+            continue;
+        }
+        // Symlinked dirs are skipped: following one could point outside the
+        // roots, and the grant itself re-validates anyway.
+        let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+        if !is_dir {
+            continue;
+        }
+        if dirs.len() >= MAX_BROWSE_ENTRIES {
+            truncated = true;
+            break;
+        }
+        dirs.push(BrowseEntry {
+            path: target.join(&name).to_string_lossy().into_owned(),
+            name,
+        });
+    }
+    dirs.sort_by_key(|d| d.name.to_lowercase());
+
+    // Offer "up" only while the parent is still inside an allowed root.
+    let parent = target
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| {
+            canon_roots
+                .iter()
+                .any(|r| std::path::Path::new(p).starts_with(r))
+        });
+
+    Ok(Json(BrowseResponse {
+        roots: canon_roots,
+        path: Some(target.to_string_lossy().into_owned()),
+        parent,
+        dirs,
+        truncated,
+    }))
 }
 
 async fn cancel(
@@ -329,7 +497,7 @@ async fn create(
         .filter(|s| !s.is_empty())
     {
         Some(path) => Some(
-            crate::cli::validate_workspace(&cli.workspace_roots, path)
+            crate::cli::validate_workspace(&state.config.workspace_roots, path)
                 .map(|p| p.to_string_lossy().into_owned())
                 .map_err(AppError::BadRequest)?,
         ),
@@ -436,13 +604,51 @@ async fn create(
         }
     };
 
-    let sse = run_sse(state.clone(), owner, run_id, events);
-    Ok(Sse::new(sse).keep_alive(KeepAlive::default()))
+    // Leading event: hand every subscriber the run id so it can cancel this run
+    // (the cancel endpoint needs the id) and link the live stream to history.
+    state
+        .cli_runs
+        .publish(&run_id, json!({ "type": "run", "id": run_id }));
+
+    // Subscribe BEFORE spawning the driver so even an instantly-finishing run
+    // can't tear the channel down between spawn and subscribe.
+    let (replay, rx) = state
+        .cli_runs
+        .subscribe(&run_id)
+        .expect("channel exists for a just-begun run");
+
+    // Drive the run to completion in the BACKGROUND, decoupled from this
+    // connection: the client navigating away (dropping this SSE) no longer
+    // kills the run — it keeps publishing into the registry hub, persists its
+    // terminal outcome, and any client can re-attach via GET /cli/runs/{id}/events.
+    tokio::spawn(drive_run(state.clone(), owner, run_id, events));
+
+    Ok(Sse::new(forward_events(replay, rx)).keep_alive(KeepAlive::default()))
 }
 
-/// Releases the per-owner active slot when the stream completes *or is dropped*
-/// (e.g. the client disconnects), so a slot can't leak. The DB row's terminal
-/// state is written inside the stream before this runs.
+/// Re-attach to an **active** run's event stream: replays everything published
+/// so far (atomically — no gap to the live tail), then streams live events
+/// until the run completes. `409` when the run is not active any more — fetch
+/// `GET /cli/runs/{id}` for its terminal state instead.
+async fn events(
+    State(state): State<AppState>,
+    CurrentOwner(owner): CurrentOwner,
+    Path(id): Path<String>,
+) -> AppResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    // Must exist and be owned before we touch the registry.
+    repo::get_run(&state.db, &owner, &id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let (replay, rx) = state
+        .cli_runs
+        .subscribe(&id)
+        .ok_or_else(|| AppError::Conflict("run is not active".into()))?;
+    Ok(Sse::new(forward_events(replay, rx)).keep_alive(KeepAlive::default()))
+}
+
+/// Releases the per-owner active slot (and the event channel) however the
+/// driver task exits, so a slot can't leak. The DB row's terminal state and the
+/// trailing `done` event are written before this runs on the normal path.
 struct FinishGuard {
     state: AppState,
     owner: String,
@@ -455,52 +661,75 @@ impl Drop for FinishGuard {
     }
 }
 
-/// Forward run events as SSE, then persist the terminal outcome and free the
-/// owner's slot.
-fn run_sse(
+/// The background run driver: consumes the runner's events, publishes each to
+/// the registry hub (replay buffer + live broadcast), persists the terminal
+/// outcome, and publishes the trailing `done`. Runs to completion regardless of
+/// whether any SSE subscriber is still connected.
+async fn drive_run(
     state: AppState,
     owner: String,
     run_id: String,
     events: super::runner::RunStream,
+) {
+    let _guard = FinishGuard {
+        state: state.clone(),
+        owner: owner.clone(),
+        run_id: run_id.clone(),
+    };
+    let mut events = events;
+    let mut outcome: Option<RunOutcome> = None;
+
+    while let Some(ev) = events.next().await {
+        if let Some(o) = outcome_from(&ev) {
+            outcome = Some(o);
+        }
+        if let Ok(payload) = serde_json::to_value(&ev) {
+            state.cli_runs.publish(&run_id, payload);
+        }
+    }
+
+    // Resolve the final status: an explicit cancel wins over the terminal
+    // event's own classification.
+    let mut final_outcome = outcome.unwrap_or_else(|| RunOutcome {
+        status: "failed".into(),
+        error: Some("the run ended without a result".into()),
+        ..Default::default()
+    });
+    if state.cli_runs.was_cancelled(&run_id) {
+        final_outcome.status = "cancelled".into();
+    }
+    let status = final_outcome.status.clone();
+
+    let _ = repo::finalize_run(&state.db, &owner, &run_id, &final_outcome).await;
+    state
+        .cli_runs
+        .publish(&run_id, json!({ "type": "done", "status": status }));
+    // _guard drops here: frees the owner's slot and closes every subscriber.
+}
+
+/// Forward a subscription (replay snapshot + live tail) as SSE. Ends when the
+/// run's channel closes (the driver finished) or the client disconnects.
+fn forward_events(
+    replay: Vec<serde_json::Value>,
+    mut rx: tokio::sync::broadcast::Receiver<serde_json::Value>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
+    use tokio::sync::broadcast::error::RecvError;
     stream! {
-        let _guard = FinishGuard {
-            state: state.clone(),
-            owner: owner.clone(),
-            run_id: run_id.clone(),
-        };
-        let mut events = events;
-        let mut outcome: Option<RunOutcome> = None;
-
-        // Leading event: hand the client the run id so it can cancel this run
-        // (the cancel endpoint needs the id) and link the live stream to history.
-        yield Ok::<_, Infallible>(Event::default()
-            .json_data(json!({ "type": "run", "id": run_id }))
-            .unwrap());
-
-        while let Some(ev) = events.next().await {
-            if let Some(o) = outcome_from(&ev) {
-                outcome = Some(o);
+        for payload in replay {
+            yield Ok::<_, Infallible>(Event::default().json_data(&payload).unwrap());
+        }
+        loop {
+            match rx.recv().await {
+                Ok(payload) => {
+                    yield Ok::<_, Infallible>(Event::default().json_data(&payload).unwrap());
+                }
+                // Fell behind the broadcast ring: skip ahead (the replay the
+                // client already got is intact; only intermediate progress
+                // events were dropped).
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
             }
-            yield Ok::<_, Infallible>(Event::default().json_data(&ev).unwrap());
         }
-
-        // Resolve the final status: an explicit cancel wins over the terminal
-        // event's own classification.
-        let mut final_outcome = outcome.unwrap_or_else(|| RunOutcome {
-            status: "failed".into(),
-            error: Some("the run ended without a result".into()),
-            ..Default::default()
-        });
-        if state.cli_runs.was_cancelled(&run_id) {
-            final_outcome.status = "cancelled".into();
-        }
-        let status = final_outcome.status.clone();
-
-        let _ = repo::finalize_run(&state.db, &owner, &run_id, &final_outcome).await;
-        yield Ok(Event::default()
-            .json_data(json!({ "type": "done", "status": status }))
-            .unwrap());
     }
 }
 
