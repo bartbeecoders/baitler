@@ -5,6 +5,7 @@ import { Boxes } from 'lucide-react';
 import { navItems } from '@/config/navigation';
 import { OBJECT_BASE_PATHS } from '@/config/objects';
 import { ObjectsNav } from '@/features/objects/ObjectsNav';
+import { PluginRailItems } from '@/features/plugins/slots';
 import { cn } from '@/lib/cn';
 import { Brand } from './Brand';
 
@@ -85,6 +86,8 @@ export function Rail() {
             )}
           </span>
         ))}
+        {/* Enabled plugins with a `rail` UI mount add their own icons (16.C). */}
+        <PluginRailItems />
       </nav>
 
       {/* Objects flyout */}

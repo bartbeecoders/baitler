@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Boxes } from 'lucide-react';
 
 import { OBJECT_TYPES } from '@/config/objects';
+import { PluginObjectItems } from '@/features/plugins/slots';
 import { cn } from '@/lib/cn';
 import { useObjectsNav } from '@/stores/objectsNav';
 import {
@@ -102,6 +103,8 @@ export function ObjectsNav() {
               </li>
             );
           })}
+          {/* Enabled plugins with an `object` UI mount list here (16.C). */}
+          <PluginObjectItems />
         </ul>
       )}
     </li>

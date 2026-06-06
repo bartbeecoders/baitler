@@ -146,11 +146,23 @@ content writes are forced draft and **record their own activity rows** (`plugin:
 `run_id`); every invocation logs `plugin.invoke`. `plugin_kv` (keyed owner+slug, survives upgrades,
 cascaded on uninstall) is the only plugin persistence — plugins never define tables. A
 Baitler-spawned run may author/propose/invoke-enabled but is refused `plugins_uninstall` at the
-protocol layer (the `workspace_` precedent). "plugin" is a first-class knowledge item
-(`ITEM_TYPES`/`MEMBER_TYPES`/`knowledge_search` section). `plugin` is enabled by `PLUGINS_ENABLED`
-(default false). Tests: `tests/plugins.rs` (lifecycle, default features) + `tests/plugins_runtime.rs`
-(hand-written WAT fixtures under `--features plugins`); CI runs both configurations. Authoring guide:
-**`docs/plugins.md`**. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN` (optional bearer,
+protocol layer (the `workspace_` precedent) and cannot `replace` an approved/enabled plugin. "plugin"
+is a first-class knowledge item (`ITEM_TYPES`/`MEMBER_TYPES`/`knowledge_search` section). The
+**Phase 16.C** API-endpoint + UI kinds: a plugin's `endpoints[]` serve under a single catch-all
+`{METHOD} /px/{slug}/{*rest}` (a `/px/` prefix kept apart from `/plugins/` so a plugin path can't
+shadow a lifecycle verb) dispatching to the bound WASM export with `{method,path,query,body,owner}`
+under a route-layer `tokio::time::timeout`→504 (host-fn `block_on`s are each separately 10s-bounded so
+a wedged query releases its blocking thread); a plugin's `ui[]` static assets (uploaded as a
+`ui_assets` map in `plugins_create`, migration 0019, covered by the 3-arg `bundle_sha256`) serve from
+`GET /plugin-ui/{uuid}/{*path}` **outside** the CORS layer (next to `pages::public`) on an opaque
+cookieless origin (`sandbox allow-scripts` w/o `allow-same-origin`, `connect-src 'none'`,
+`frame-ancestors <app origins>`), enabled-only. The frontend mounts UI plugins in a sandboxed
+`PluginFrame` whose postMessage bridge **normalizes + origin-pins** each requested path to the
+plugin's own `/px/{slug}/` prefix before relaying through the credentialed client (a raw `startsWith`
+would be traversal-bypassable). `plugin` is enabled by `PLUGINS_ENABLED`
+(default false). Tests: `tests/plugins.rs` (lifecycle + endpoint/UI, default features) +
+`tests/plugins_runtime.rs` (hand-written WAT fixtures under `--features plugins`) + frontend
+`features/plugins/*.test.tsx`; CI runs both configurations. Authoring guide: **`docs/plugins.md`**. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN` (optional bearer,
 constant-time checked). Binary blobs (pdf/docx/file reads) are Base64 in the
 JSON result. Full client setup (Claude Code, Hermes agent, other MCP tools) is in **`docs/mcp.md`**.
 

@@ -383,6 +383,22 @@ fn validate_endpoints(m: &Manifest, issues: &mut Vec<Issue>) {
     }
 }
 
+/// Bundle-relative asset path rule, shared by manifest validation, the
+/// `plugins_create` upload cap, and the public serve boundary: relative
+/// segments of `[A-Za-z0-9._-]`, no `..`/`.`, no leading slash.
+pub fn valid_asset_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 200
+        && path.split('/').all(|seg| {
+            !seg.is_empty()
+                && seg != ".."
+                && seg != "."
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+
 fn validate_ui(m: &Manifest, issues: &mut Vec<Issue>) {
     if m.ui.len() > MAX_UI {
         issues.push(Issue::new(
@@ -407,10 +423,11 @@ fn validate_ui(m: &Manifest, issues: &mut Vec<Issue>) {
                 "a stable identifier for this mount",
             ));
         }
-        if u.entry.trim().is_empty() || u.entry.contains("..") || u.entry.starts_with('/') {
+        if !valid_asset_path(&u.entry) {
             issues.push(Issue::new(
                 &format!("{path}.entry"),
-                "entry must be a bundle-relative asset path (no `..`, no leading slash)",
+                "entry must be a bundle-relative asset path of [A-Za-z0-9._-] segments \
+                 (no `..`, no leading slash)",
                 "e.g. `ui/index.html`",
             ));
         }

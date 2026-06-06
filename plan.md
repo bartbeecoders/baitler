@@ -834,9 +834,42 @@ Architecture: a plugin is one row in a new `plugin` table plus one self-containe
 
 ### C — API-endpoint & UI plugin kinds
 
-- [ ] **16.8** Endpoint kind: **one** static catch-all `/plugins/{slug}/{*rest}` in `plugins::routes::router()` (credentialed, owner-scoped) — no plugin ever registers a real Axum route; dispatch by slug + matched `endpoints[]` entry to the bound export with `{method,path,query,body,owner}`, wrapped in `tokio::time::timeout` (504); response HTML through `convert::sanitize`; disabled/missing → 503/404.
-- [ ] **16.9** UI kind backend: `src/plugins/public.rs` serving `GET /plugin-ui/{uuid}/{*path}` from `ui_assets`, merged **outside** the CORS layer next to `pages::public::router()`, opaque cookieless origin under the no-`allow-same-origin` CSP above.
-- [ ] **16.10 (tests-with-features)** Frontend: `features/plugins/PluginFrame.tsx` (sandboxed iframe + origin-pinned typed postMessage RPC relayed through `apiFetch` — the frame never holds credentials), `stores/plugins.ts` hydrated from `GET /plugins?status=enabled` feeding the declared `slot`s (`object` → an `ObjectsNav` adapter, `rail` icon, `butler_widget` card on the home feed, `detail` → a lazy `/plugins/:slug` route), each lazy + ErrorBoundary-wrapped; a lazy `PluginsPage` (status chips, provenance "authored by {agent}, run …", the Review queue with the manifest capabilities rendered as a permission diff + Approve/Reject, enable/disable/uninstall). `vitest`: frame mounts the right origin, bridge rejects wrong-origin messages, Approve hits the REST endpoint, a slot renders a registered plugin. Backend tests: endpoint dispatch + timeout + the UI route's CSP/opaque-origin headers.
+> **Milestone C shipped** (branch `phase-16-plugins`). Endpoint kind: one static catch-all
+> `any(/px/{slug}/{*rest})` (a deliberate `/px/` prefix, NOT `/plugins/`, so a plugin path can never
+> collide with a lifecycle verb), dispatching by method+path to the bound export with
+> `{method,path,query,body,owner}`, response-shaped (plain JSON → `application/json`, or
+> `{status?,content_type?,body}` under a content-type whitelist with HTML/SVG `convert::sanitize`d,
+> status 200..=499) under a route-layer `tokio::time::timeout` → new `AppError::Timeout` (504);
+> parked → 409, missing → 404; logs `plugin.invoke`. UI kind: migration `0019` adds a `ui_assets`
+> JSON column (covered by `bundle_sha256` — now 3-arg); `plugins_create` takes a `ui_assets` map
+> (≤32 files, ≤2 MiB decoded, path-safe keys, every `ui[].entry` present); `plugins/public.rs` serves
+> `GET /plugin-ui/{uuid}/{*path}` **outside** the CORS layer, enabled-only, owner-less by uuid, under
+> `default-src 'none'; script-src 'self'; …; connect-src 'none'; frame-ancestors <app origins>;
+> sandbox allow-scripts` (no `allow-same-origin`); closed content-type list + `nosniff`; drafts 404.
+> Frontend `features/plugins/`: `PluginFrame` (sandboxed iframe + postMessage bridge — trusts
+> `event.source===contentWindow` since the frame's origin is opaque, **resolves+normalizes** each
+> requested path and pins it to the plugin's own `/px/{slug}/` prefix before relaying through the
+> credentialed `apiFetch`), `api.ts` hooks, lazy `PluginsPage` (review queue with the capability
+> permission-diff + approve/reject/enable/disable/uninstall + a `/plugins/:id` detail frame), and
+> failure-silent `slots.tsx` mounts wired into Rail/ButlerHome/ObjectsNav. **As-built deltas:**
+> (a) endpoints mount under `/px/` not `/plugins/{slug}` (collision-proof) — the export shapes its own
+> response rather than a bespoke renderer; (b) **no `stores/plugins.ts` zustand store** — enabled
+> plugins come from a shared TanStack `useEnabledPlugins` query (`retry:false`, 60 s `staleTime`), the
+> established data-fetch convention, so chrome stays failure-silent without bespoke state; (c) the
+> bridge's containment is **normalized-pathname + origin pinning**, not raw `startsWith` (a review
+> caught that a raw prefix check is traversal-bypassable — `/px/{slug}/../../ai/keys`); (d) host-fn
+> `block_on`s are each wrapped in a 10 s timeout so a wedged DB call releases its blocking-pool thread
+> (the route deadline frees only the request task, never the `spawn_blocking` thread). **Verified
+> green:** backend fmt + clippy `-D warnings` + 205/212 tests (both configs); frontend tsc + eslint +
+> 90 vitest (incl. traversal-escape regression cases) + build (`PluginsPage` code-split ~6 KB gz);
+> live binary probe (UI create→enable→serve with the exact CSP, draft 404, `%2e%2e` traversal 404,
+> `/px` vs `/plugins` route separation). **Adversarial 4-lens review** (15 findings → 3 confirmed +
+> fixed: the bridge traversal hole, the false host-fn-containment claim, a stale digest-ordering
+> comment; 12 refuted incl. a verified "old plugins survive the digest change").
+
+- [x] **16.8** Endpoint kind: **one** static catch-all `/plugins/{slug}/{*rest}` in `plugins::routes::router()` (credentialed, owner-scoped) — no plugin ever registers a real Axum route; dispatch by slug + matched `endpoints[]` entry to the bound export with `{method,path,query,body,owner}`, wrapped in `tokio::time::timeout` (504); response HTML through `convert::sanitize`; disabled/missing → 503/404.
+- [x] **16.9** UI kind backend: `src/plugins/public.rs` serving `GET /plugin-ui/{uuid}/{*path}` from `ui_assets`, merged **outside** the CORS layer next to `pages::public::router()`, opaque cookieless origin under the no-`allow-same-origin` CSP above.
+- [x] **16.10 (tests-with-features)** Frontend: `features/plugins/PluginFrame.tsx` (sandboxed iframe + origin-pinned typed postMessage RPC relayed through `apiFetch` — the frame never holds credentials), `stores/plugins.ts` hydrated from `GET /plugins?status=enabled` feeding the declared `slot`s (`object` → an `ObjectsNav` adapter, `rail` icon, `butler_widget` card on the home feed, `detail` → a lazy `/plugins/:slug` route), each lazy + ErrorBoundary-wrapped; a lazy `PluginsPage` (status chips, provenance "authored by {agent}, run …", the Review queue with the manifest capabilities rendered as a permission diff + Approve/Reject, enable/disable/uninstall). `vitest`: frame mounts the right origin, bridge rejects wrong-origin messages, Approve hits the REST endpoint, a slot renders a registered plugin. Backend tests: endpoint dispatch + timeout + the UI route's CSP/opaque-origin headers.
 
 ### D — Multi-user & hardening (post-Phase-2, later sub-phase)
 

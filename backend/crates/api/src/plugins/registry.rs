@@ -69,7 +69,10 @@ impl PluginRegistry {
             crate::mcp::b64::decode(&wasm_b64)
                 .map_err(|e| AppError::Internal(format!("stored wasm is not Base64: {e}").into()))?
         };
-        let digest = repo::bundle_sha256(&row.manifest, &wasm);
+        let ui_assets_json = repo::get_ui_assets_json(db, &row.owner, &row.uuid)
+            .await?
+            .unwrap_or_default();
+        let digest = repo::bundle_sha256(&row.manifest, &wasm, &ui_assets_json);
         if digest != row.bundle_sha256 {
             return Err(AppError::Conflict(format!(
                 "plugin `{}` bundle digest mismatch (stored {}, computed {digest}) — \
@@ -174,6 +177,45 @@ impl PluginRegistry {
     ) -> Result<Value, ToolError> {
         self.dispatch(state, actor, &format!("{TOOL_PREFIX}{slug}__{tool}"), args)
             .await
+    }
+
+    /// Resolve an enabled plugin's declared HTTP endpoint (`method` + `path`
+    /// under its mount) to the loaded plugin and the bound WASM export — the
+    /// Phase 16.C endpoint kind. `None` ⇒ no such plugin/endpoint (404).
+    pub(crate) fn resolve_endpoint(
+        &self,
+        owner: &str,
+        slug: &str,
+        method: &str,
+        path: &str,
+    ) -> Option<(Arc<LoadedPlugin>, String)> {
+        let plugins = self.plugins.read().expect("plugin registry lock");
+        let plugin = plugins
+            .iter()
+            .find(|p| p.slug == slug && p.owner == owner)?
+            .clone();
+        drop(plugins);
+        let export = plugin
+            .manifest
+            .endpoints
+            .iter()
+            .find(|e| e.method == method && e.path == path)?
+            .export
+            .clone();
+        Some((plugin, export))
+    }
+
+    /// Run a resolved export directly (the endpoint-dispatch path; tools go
+    /// through [`Self::dispatch`]). Same feature-gated runtime underneath.
+    pub(crate) async fn invoke_export(
+        &self,
+        state: &AppState,
+        actor: &Actor,
+        plugin: &Arc<LoadedPlugin>,
+        export: &str,
+        args: &Value,
+    ) -> Result<Value, ToolError> {
+        invoke(state, actor, plugin, export, args).await
     }
 }
 

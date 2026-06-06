@@ -637,6 +637,170 @@ async fn run_actor_can_propose_but_not_uninstall() {
         .contains("unknown tool"));
 }
 
+fn ui_manifest(name: &str) -> Value {
+    json!({
+        "name": name,
+        "version": "0.1.0",
+        "description": "ui widget",
+        "ui": [{ "slot": "detail", "key": "w", "label": "Widget", "entry": "ui/index.html" }],
+        "capabilities": {}
+    })
+}
+
+#[tokio::test]
+async fn ui_assets_are_validated_served_opaque_origin_and_exported() {
+    let base = spawn_app(true).await;
+    let client = Client::new();
+
+    // Declaring ui[] without supplying the assets is refused with guidance.
+    let err = call_err(
+        &client,
+        &base,
+        None,
+        "plugins_create",
+        json!({ "manifest": ui_manifest("UI Widget") }),
+    )
+    .await;
+    assert!(err.contains("ui_assets"), "unhelpful: {err}");
+
+    // Traversal-y asset paths are refused at upload.
+    let err = call_err(
+        &client,
+        &base,
+        None,
+        "plugins_create",
+        json!({ "manifest": ui_manifest("UI Widget"),
+                "ui_assets": { "ui/../index.html": base64(b"x") } }),
+    )
+    .await;
+    assert!(err.contains("invalid"), "unhelpful: {err}");
+
+    // A UI-only plugin needs no WASM at all.
+    let html = b"<!doctype html><html><head><script src=\"app.js\"></script></head>\
+                 <body>widget</body></html>";
+    let created = call_ok(
+        &client,
+        &base,
+        "plugins_create",
+        json!({ "manifest": ui_manifest("UI Widget"), "ui_assets": {
+            "ui/index.html": base64(html),
+            "ui/app.js": base64(b"console.log('widget')"),
+        } }),
+    )
+    .await;
+    assert_eq!(created["status"], "draft");
+    assert_eq!(created["kinds"], json!(["ui_component"]));
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Drafts are NOT served (404, existence unconfirmed).
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/index.html"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Approve + enable → served from the opaque, cookieless origin.
+    client
+        .post(format!("{base}/plugins/{id}/approve"))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/plugins/{id}/enable"))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/index.html"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(csp.contains("sandbox allow-scripts"), "csp: {csp}");
+    assert!(!csp.contains("allow-same-origin"), "csp: {csp}");
+    assert!(csp.contains("script-src 'self'"), "csp: {csp}");
+    assert!(csp.contains("connect-src 'none'"), "csp: {csp}");
+    assert!(
+        csp.contains("frame-ancestors http://localhost:8100"),
+        "csp: {csp}"
+    );
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    assert!(resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("widget"));
+
+    // Sibling assets serve with their own type; unknown paths 404; encoded
+    // traversal is rejected at the boundary.
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/app.js"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("text/javascript"));
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/nope.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/%2e%2e/secret"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Export round-trips the assets (backup/transfer).
+    let exported = call_ok(
+        &client,
+        &base,
+        "plugins_export",
+        json!({ "slug": "ui-widget" }),
+    )
+    .await;
+    assert_eq!(
+        exported["ui_assets"]["ui/app.js"],
+        base64(b"console.log('widget')")
+    );
+
+    // Disable de-serves.
+    client
+        .post(format!("{base}/plugins/{id}/disable"))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .get(format!("{base}/plugin-ui/{id}/ui/index.html"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn uninstall_scrubs_links_and_kv() {
     let base = spawn_app(true).await;

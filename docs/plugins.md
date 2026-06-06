@@ -11,8 +11,8 @@ A plugin can ship three capability kinds (one plugin may mix them):
 | Kind | Declared in | Executed as | Status |
 |---|---|---|---|
 | **MCP tool** | `tools[]` | a WASM export, advertised as `plugin__{slug}__{tool}` | ✅ Phase 16.B |
-| **API endpoint** | `endpoints[]` | a WASM export behind `/plugins/{slug}/{path}` | Phase 16.C |
-| **UI component** | `ui[]` | static assets in a sandboxed opaque-origin iframe | Phase 16.C |
+| **API endpoint** | `endpoints[]` | a WASM export behind `{METHOD} /px/{slug}/{path}` | ✅ Phase 16.C |
+| **UI component** | `ui[]` | static assets in a sandboxed opaque-origin iframe | ✅ Phase 16.C |
 
 ## Enabling the system
 
@@ -137,6 +137,56 @@ tables); it is keyed on `(owner, slug)` so state survives upgrades and is
 cascaded away on uninstall. Content written through host fns records its own
 `activity` rows attributed to `plugin:{slug}` plus the invoking run's
 `run_id` — so the butler report shows exactly what a plugin did.
+
+## API endpoints (the `endpoints[]` kind)
+
+Enabled plugins serve HTTP under **`/px/{slug}/…`** (a deliberate prefix apart
+from the `/plugins` management surface, so a plugin path like `approve` can
+never collide with a lifecycle verb). One static catch-all dispatches every
+endpoint — plugins never register routes. The bound export receives
+`{method, path, query, body, owner}` as JSON and may return either a plain
+JSON value (served as `application/json`) or `{status?, content_type?, body}`
+— content types are whitelisted (`application/json`, `text/plain`, `text/csv`,
+`text/html`, `image/svg+xml`; HTML/SVG are sanitized server-side) and status
+is limited to 200–499. The whole dispatch sits under a route-layer deadline
+(`timeout_ms` + 5 s grace → 504) on top of the in-sandbox epoch kill, and
+every call logs a `plugin.invoke` activity row.
+
+## UI components (the `ui[]` kind)
+
+Declare mounts in `ui[]` (`slot`: `detail` | `rail` | `butler_widget` |
+`object`) and upload the assets with `plugins_create {ui_assets: {"<path>":
+"<base64>", …}}` (≤32 files, ≤2 MiB decoded; every declared `entry` must be
+present; covered by the bundle digest). While enabled, assets serve from
+**`GET /plugin-ui/{uuid}/{path}`** — outside the CORS layer, on an **opaque,
+cookieless origin**: `sandbox allow-scripts` without `allow-same-origin`,
+`connect-src 'none'`, content types from a closed extension list with
+`nosniff`, and `frame-ancestors` pinned to the app origins. Drafts/disabled
+plugins 404.
+
+The portal mounts each slot in a sandboxed `<iframe>` via `PluginFrame`
+(`frontend/src/features/plugins/`). Since the frame cannot fetch
+(`connect-src 'none'`) and holds no credentials, its ONLY path to Baitler is
+the **postMessage bridge**, which the host pins to the plugin's own
+`/px/{slug}/…` endpoints and relays through the credentialed client:
+
+```js
+// inside plugin UI code
+window.parent.postMessage(
+  { baitler: 'fetch', id: 'r1', path: '/px/csv-stats/summarize', method: 'POST', body: {…} },
+  '*',
+);
+window.addEventListener('message', (e) => {
+  if (e.data?.baitler === 'result' && e.data.id === 'r1') {
+    // e.data.ok, e.data.body | e.data.error
+  }
+});
+// the host also posts { baitler: 'init', slug, theme } on load
+```
+
+Manage everything (review queue with the capability diff, approve/reject,
+enable/disable, uninstall, and each plugin's detail surface) on the portal's
+**Plugins** page (`/plugins`).
 
 ## Containment summary
 

@@ -16,6 +16,7 @@
 
 pub mod manifest;
 pub mod model;
+pub mod public;
 mod registry;
 pub mod repo;
 pub mod routes;

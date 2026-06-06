@@ -370,6 +370,85 @@ async fn plugins_test_sandbox_is_throwaway() {
 }
 
 #[tokio::test]
+async fn endpoint_kind_dispatches_through_the_same_sandbox() {
+    let (base, _state) = spawn_app().await;
+    let client = Client::new();
+
+    let manifest = json!({
+        "name": "Endpoint Echo",
+        "endpoints": [{ "method": "POST", "path": "echo", "export": "echo" }],
+        "capabilities": {}
+    });
+    let (id, slug) = install(&client, &base, manifest, echo_wasm()).await;
+
+    // The export receives {method, path, query, body, owner}; echo returns it.
+    let resp = client
+        .post(format!("{base}/px/{slug}/echo?x=1"))
+        .json(&json!({ "a": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
+    let out: Value = resp.json().await.unwrap();
+    assert_eq!(out["method"], "POST");
+    assert_eq!(out["path"], "echo");
+    assert_eq!(out["query"], "x=1");
+    assert_eq!(out["body"], json!({ "a": 1 }));
+    assert!(out["owner"].is_string());
+
+    // Method mismatch and unknown paths are 404; unknown slugs too.
+    let resp = client
+        .get(format!("{base}/px/{slug}/echo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = client
+        .post(format!("{base}/px/{slug}/nope"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = client
+        .post(format!("{base}/px/no-such-plugin/echo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // A parked plugin explains itself (owner-scoped surface, no info leak).
+    client
+        .post(format!("{base}/plugins/{id}/disable"))
+        .send()
+        .await
+        .unwrap();
+    let resp = client
+        .post(format!("{base}/px/{slug}/echo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("disabled"), "{body}");
+
+    // Endpoint invocations land in the provenance log too.
+    let activity = call_ok(&client, &base, "activity_list", json!({})).await;
+    assert!(activity["activity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["action"] == "plugin.invoke"
+            && a["target_title"].as_str().unwrap().contains("/px/")));
+}
+
+#[tokio::test]
 async fn corrupted_bundle_refuses_enable_and_rolls_back_to_disabled() {
     let (base, state) = spawn_app().await;
     let client = Client::new();

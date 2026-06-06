@@ -31,6 +31,11 @@ pub enum AppError {
     #[error("service unavailable: {0}")]
     Unavailable(String),
 
+    /// An upstream/embedded execution exceeded its wall-clock budget (e.g. a
+    /// plugin endpoint past the route-layer deadline, Phase 16) → 504.
+    #[error("timed out: {0}")]
+    Timeout(String),
+
     // Boxed to keep `AppError` small: `surrealdb::Error` is ~144 bytes, and
     // leaving it inline would bloat every `Result<_, AppError>` in the codebase.
     #[error("database error")]
@@ -98,6 +103,7 @@ impl AppError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            AppError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -110,6 +116,7 @@ impl AppError {
             AppError::Conflict(_) => "conflict",
             AppError::PayloadTooLarge(_) => "payload_too_large",
             AppError::Unavailable(_) => "unavailable",
+            AppError::Timeout(_) => "timeout",
             AppError::Database(_) => "database_error",
             AppError::Internal(_) => "internal_error",
         }

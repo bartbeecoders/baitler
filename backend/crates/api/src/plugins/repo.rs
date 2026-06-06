@@ -33,12 +33,18 @@ fn vanished() -> AppError {
     AppError::Internal("plugin not found immediately after write".into())
 }
 
-/// Content hash pinning the installed artifact: manifest JSON + WASM bytes.
-/// Re-checked by the registry on every load; a mismatch refuses to run.
-pub fn bundle_sha256(manifest_json: &str, wasm: &[u8]) -> String {
+/// Content hash pinning the installed artifact: manifest JSON + WASM bytes +
+/// the UI-assets JSON. Determinism does NOT rely on map key ordering: the
+/// caller hashes the exact `ui_assets_json` STRING it stores, and the registry
+/// re-hashes the same stored string verbatim on load (never a re-serialization)
+/// — so whatever order `serde_json` emitted at create time round-trips byte for
+/// byte. A mismatch refuses to run. (An empty `ui_assets_json` is a hash no-op,
+/// so a pre-16.C 2-arg digest still matches the 3-arg recomputation.)
+pub fn bundle_sha256(manifest_json: &str, wasm: &[u8], ui_assets_json: &str) -> String {
     let mut h = Sha256::new();
     h.update(manifest_json.as_bytes());
     h.update(wasm);
+    h.update(ui_assets_json.as_bytes());
     hex::encode(h.finalize())
 }
 
@@ -69,6 +75,34 @@ pub async fn get_wasm_b64(db: &Db, owner: &str, uuid: &str) -> AppResult<Option<
     let mut res = db
         .query("SELECT VALUE wasm_b64 FROM plugin WHERE owner = $owner AND uuid = $uuid")
         .bind(("owner", owner.to_string()))
+        .bind(("uuid", uuid.to_string()))
+        .await?
+        .check()?;
+    Ok(res.take::<Vec<String>>(0)?.into_iter().next())
+}
+
+/// The (possibly large) UI-assets JSON body. Empty string = no UI assets.
+pub async fn get_ui_assets_json(db: &Db, owner: &str, uuid: &str) -> AppResult<Option<String>> {
+    let mut res = db
+        .query("SELECT VALUE ui_assets FROM plugin WHERE owner = $owner AND uuid = $uuid")
+        .bind(("owner", owner.to_string()))
+        .bind(("uuid", uuid.to_string()))
+        .await?
+        .check()?;
+    Ok(res.take::<Vec<String>>(0)?.into_iter().next())
+}
+
+/// **Unauthenticated** UI-assets lookup for the public opaque-origin serve
+/// route (`GET /plugin-ui/{uuid}/…`): resolves a plugin uuid to its assets
+/// JSON only while the plugin is `enabled`. Deliberately NOT owner-scoped —
+/// the uuid (v4, unguessable) addresses the asset bundle the owner chose to
+/// run — and never serves drafts/disabled (404 without confirming existence).
+pub async fn get_served_ui_assets(db: &Db, uuid: &str) -> AppResult<Option<String>> {
+    let mut res = db
+        .query(
+            "SELECT VALUE ui_assets FROM plugin \
+             WHERE uuid = $uuid AND status = \"enabled\"",
+        )
         .bind(("uuid", uuid.to_string()))
         .await?
         .check()?;
@@ -138,10 +172,11 @@ pub async fn create_plugin(
     kinds: &[String],
     wasm_b64: &str,
     wasm_bytes: &[u8],
+    ui_assets_json: &str,
     author: Author<'_>,
     replace: bool,
 ) -> AppResult<PluginRow> {
-    let sha = bundle_sha256(manifest_json, wasm_bytes);
+    let sha = bundle_sha256(manifest_json, wasm_bytes, ui_assets_json);
 
     let target_slug = slug::slugify(&manifest.name, "plugin");
     let existing = get_by_slug(db, owner, &target_slug).await?;
@@ -169,7 +204,7 @@ pub async fn create_plugin(
             "UPDATE plugin SET name = $name, description = $description, version = $version, \
              version_int = version_int + 1, api_version = $api_version, manifest = $manifest, \
              kinds = $kinds, status = \"draft\", review = \"draft\", bundle_sha256 = $sha, \
-             wasm_b64 = $wasm, author_agent = $agent, run_id = $run \
+             wasm_b64 = $wasm, ui_assets = $ui, author_agent = $agent, run_id = $run \
              WHERE owner = $owner AND uuid = $uuid; \
              {PLUGIN_SELECT} WHERE owner = $owner AND uuid = $uuid"
         );
@@ -185,6 +220,7 @@ pub async fn create_plugin(
             .bind(("kinds", kinds.to_vec()))
             .bind(("sha", sha))
             .bind(("wasm", wasm_b64.to_string()))
+            .bind(("ui", ui_assets_json.to_string()))
             .bind(("agent", author.agent.map(str::to_string)))
             .bind(("run", author.run_id.map(str::to_string)))
             .await?
@@ -203,7 +239,7 @@ pub async fn create_plugin(
          description: $description, version: $version, version_int: 1, \
          api_version: $api_version, manifest: $manifest, kinds: $kinds, \
          status: \"draft\", review: \"draft\", bundle_sha256: $sha, wasm_b64: $wasm, \
-         author_agent: $agent, run_id: $run }}; \
+         ui_assets: $ui, author_agent: $agent, run_id: $run }}; \
          {PLUGIN_SELECT} WHERE owner = $owner AND uuid = $uuid"
     );
     let mut res = db
@@ -219,6 +255,7 @@ pub async fn create_plugin(
         .bind(("kinds", kinds.to_vec()))
         .bind(("sha", sha))
         .bind(("wasm", wasm_b64.to_string()))
+        .bind(("ui", ui_assets_json.to_string()))
         .bind(("agent", author.agent.map(str::to_string)))
         .bind(("run", author.run_id.map(str::to_string)))
         .await?
@@ -411,10 +448,14 @@ mod tests {
 
     #[test]
     fn bundle_hash_is_stable_and_input_sensitive() {
-        let a = bundle_sha256("{\"name\":\"x\"}", b"wasm");
-        assert_eq!(a, bundle_sha256("{\"name\":\"x\"}", b"wasm"));
-        assert_ne!(a, bundle_sha256("{\"name\":\"y\"}", b"wasm"));
-        assert_ne!(a, bundle_sha256("{\"name\":\"x\"}", b"wasm2"));
+        let a = bundle_sha256("{\"name\":\"x\"}", b"wasm", "");
+        assert_eq!(a, bundle_sha256("{\"name\":\"x\"}", b"wasm", ""));
+        assert_ne!(a, bundle_sha256("{\"name\":\"y\"}", b"wasm", ""));
+        assert_ne!(a, bundle_sha256("{\"name\":\"x\"}", b"wasm2", ""));
+        assert_ne!(
+            a,
+            bundle_sha256("{\"name\":\"x\"}", b"wasm", "{\"ui/a\":\"x\"}")
+        );
         assert_eq!(a.len(), 64);
     }
 }

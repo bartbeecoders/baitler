@@ -43,6 +43,9 @@ const SuperpagesPage = lazy(() =>
 const ButlerHome = lazy(() =>
   import('@/features/butler/ButlerHome').then((m) => ({ default: m.ButlerHome })),
 );
+const PluginsPage = lazy(() =>
+  import('@/features/plugins/PluginsPage').then((m) => ({ default: m.PluginsPage })),
+);
 
 /** Non-object feature routes that have a real implementation (others → placeholder). */
 const FEATURE_PAGES: Record<string, ReactNode> = {
@@ -50,6 +53,7 @@ const FEATURE_PAGES: Record<string, ReactNode> = {
   '/projects': <ProjectsPage />,
   '/agent': <AgentPage />,
   '/ai': <AiPage />,
+  '/plugins': <PluginsPage />,
 };
 
 /**
@@ -83,6 +87,8 @@ function App() {
             element={FEATURE_PAGES[item.path] ?? <FeaturePlaceholder item={item} />}
           />
         ))}
+        {/* A plugin's `detail` UI component renders full-pane at its slug. */}
+        <Route path="plugins/:id" element={<PluginsPage />} />
         {OBJECT_BASE_PATHS.map((base) => (
           <Fragment key={base}>
             <Route path={base.slice(1)} element={OBJECT_ELEMENTS[base]} />

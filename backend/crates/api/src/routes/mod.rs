@@ -62,12 +62,16 @@ pub fn router(state: AppState) -> Router {
     // The PUBLIC page surface (`GET /p/{slug}`, Phase 12) is merged OUTSIDE the
     // credentialed CORS layer and (later) any auth middleware — it serves
     // owner-less HTML to anyone and must never inherit cookie/CORS behaviour.
-    // Its own locked-down CSP/headers are set in `pages::public`.
+    // Its own locked-down CSP/headers are set in `pages::public`. Plugin UI
+    // assets (`GET /plugin-ui/{uuid}/…`, Phase 16) follow the same rule: an
+    // opaque cookieless origin whose CSP lives in `plugins::public`.
     let public_pages = crate::pages::public::router();
+    let public_plugin_ui = crate::plugins::public::router();
 
     Router::new()
         .merge(api)
         .merge(public_pages)
+        .merge(public_plugin_ui)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

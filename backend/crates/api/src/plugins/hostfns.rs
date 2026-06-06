@@ -43,9 +43,32 @@ pub(super) struct HostCtx {
     pub test_kv: Option<Arc<Mutex<HashMap<String, String>>>>,
 }
 
+/// Hard ceiling on any single host-fn repo call. The WASM call runs in
+/// `spawn_blocking` and host fns bridge to async repos via `block_on`; bounding
+/// each call means a wedged query returns an error to the guest and RELEASES
+/// the blocking-pool thread, instead of leaking it (which a route-layer timeout
+/// alone cannot prevent). Generous — local/embedded queries are sub-second.
+const HOST_FN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl HostCtx {
     fn agent_label(&self) -> String {
         format!("plugin:{}", self.slug)
+    }
+
+    /// Run a repo future to completion under [`HOST_FN_TIMEOUT`], flattening
+    /// both the timeout and the app error into a guest-readable `Error`.
+    fn db_call<T, F>(&self, fut: F) -> Result<T, Error>
+    where
+        F: std::future::Future<Output = crate::error::AppResult<T>>,
+    {
+        match self
+            .handle
+            .block_on(tokio::time::timeout(HOST_FN_TIMEOUT, fut))
+        {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(Error::msg(e.to_string())),
+            Err(_) => Err(Error::msg("host call timed out")),
+        }
     }
 
     /// Record an activity row for a host-fn content write (best-effort, like
@@ -61,7 +84,7 @@ impl HostCtx {
             summary: &summary,
         };
         let agent = self.agent_label();
-        if let Err(e) = self.handle.block_on(activity::record(
+        if let Err(e) = self.db_call(activity::record(
             &self.db,
             &self.owner,
             Some(&agent),
@@ -99,10 +122,7 @@ host_fn!(pub kn_search(ctx: HostCtx; input: String) -> String {
     let v = parse_input(&input)?;
     let q = req_str(&v, "q")?;
     let limit = v.get("limit").and_then(Value::as_u64).unwrap_or(20).min(100) as usize;
-    let results = ctx
-        .handle
-        .block_on(crate::knowledge::repo::search(&ctx.db, &ctx.owner, &q, limit))
-        .map_err(|e| Error::msg(e.to_string()))?;
+    let results = ctx.db_call(crate::knowledge::repo::search(&ctx.db, &ctx.owner, &q, limit))?;
     Ok(serde_json::to_string(&results)?)
 });
 
@@ -111,10 +131,7 @@ host_fn!(pub ideas_get(ctx: HostCtx; input: String) -> String {
     let ctx = ctx.lock().map_err(|_| Error::msg("host context poisoned"))?;
     let v = parse_input(&input)?;
     let id = req_str(&v, "id")?;
-    let row = ctx
-        .handle
-        .block_on(crate::ideas::repo::get_idea(&ctx.db, &ctx.owner, &id))
-        .map_err(|e| Error::msg(e.to_string()))?;
+    let row = ctx.db_call(crate::ideas::repo::get_idea(&ctx.db, &ctx.owner, &id))?;
     match row {
         Some(r) => Ok(serde_json::to_string(&IdeaDto::from(r))?),
         None => Ok("null".to_string()),
@@ -140,12 +157,9 @@ host_fn!(pub ideas_create(ctx: HostCtx; input: String) -> String {
         .unwrap_or_default();
     let tags = crate::tags::normalize_tags(tags).map_err(|e| Error::msg(e.to_string()))?;
     // Forced to the agent tier: plugin writes always enter the review queue.
-    let row = ctx
-        .handle
-        .block_on(crate::ideas::repo::create_idea(
-            &ctx.db, &ctx.owner, &title, body, &tags, "inbox", "draft", None,
-        ))
-        .map_err(|e| Error::msg(e.to_string()))?;
+    let row = ctx.db_call(crate::ideas::repo::create_idea(
+        &ctx.db, &ctx.owner, &title, body, &tags, "inbox", "draft", None,
+    ))?;
     ctx.record_activity("idea.create", "idea", &row.uuid, &row.title);
     Ok(serde_json::to_string(&IdeaDto::from(row))?)
 });
@@ -168,12 +182,9 @@ host_fn!(pub pages_create(ctx: HostCtx; input: String) -> String {
         Some(f) => return Err(Error::msg(format!("invalid source_format `{f}`"))),
     };
     // Forced draft visibility: a plugin can author a page, never publish one.
-    let row = ctx
-        .handle
-        .block_on(crate::pages::repo::create_page(
-            &ctx.db, &ctx.owner, &title, body, fmt, "draft", None, None, &[],
-        ))
-        .map_err(|e| Error::msg(e.to_string()))?;
+    let row = ctx.db_call(crate::pages::repo::create_page(
+        &ctx.db, &ctx.owner, &title, body, fmt, "draft", None, None, &[],
+    ))?;
     ctx.record_activity("page.create", "page", &row.uuid, &row.title);
     Ok(json!({ "id": row.uuid, "title": row.title, "slug": row.slug }).to_string())
 });
@@ -186,9 +197,7 @@ host_fn!(pub plugin_kv_get(ctx: HostCtx; input: String) -> String {
     let stored = if let Some(test_kv) = &ctx.test_kv {
         test_kv.lock().map_err(|_| Error::msg("test kv poisoned"))?.get(&k).cloned()
     } else {
-        ctx.handle
-            .block_on(super::repo::kv_get(&ctx.db, &ctx.owner, &ctx.slug, &k))
-            .map_err(|e| Error::msg(e.to_string()))?
+        ctx.db_call(super::repo::kv_get(&ctx.db, &ctx.owner, &ctx.slug, &k))?
     };
     // The stored value is JSON; embed it raw so the guest reads `{"v": …}`.
     Ok(match stored {
@@ -207,9 +216,7 @@ host_fn!(pub plugin_kv_set(ctx: HostCtx; input: String) -> String {
     if let Some(test_kv) = &ctx.test_kv {
         test_kv.lock().map_err(|_| Error::msg("test kv poisoned"))?.insert(k, raw);
     } else {
-        ctx.handle
-            .block_on(super::repo::kv_set(&ctx.db, &ctx.owner, &ctx.slug, &k, &raw))
-            .map_err(|e| Error::msg(e.to_string()))?;
+        ctx.db_call(super::repo::kv_set(&ctx.db, &ctx.owner, &ctx.slug, &k, &raw))?;
     }
     Ok("{}".to_string())
 });

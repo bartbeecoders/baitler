@@ -8,6 +8,7 @@ import { useCliStatus, useProjectOptions, useRun, useRuns } from '@/features/cli
 import { EventRow } from '@/features/cli/EventRow';
 import { useAgentChat, type Turn } from '@/features/cli/useAgentChat';
 import type { AgentProvider, CliRunSummary, ToolScope } from '@/features/cli/types';
+import { PluginWidgets } from '@/features/plugins/slots';
 import { SystemStatus } from '@/features/portal/SystemStatus';
 import { cn } from '@/lib/cn';
 import { type Conversation } from './conversations';
@@ -448,6 +449,9 @@ export function ButlerHome() {
       )}
 
       <RunReportFeed onOpen={openConversation} />
+
+      {/* Enabled plugins with a `butler_widget` UI mount render here (16.C). */}
+      <PluginWidgets />
 
       <SystemStatus />
 

@@ -2571,6 +2571,63 @@ fn decode_wasm_arg(args: &Value) -> Result<(String, Vec<u8>), ToolError> {
     Ok((b64, bytes))
 }
 
+/// Caps on the `ui_assets` upload (16.C): per-bundle file count + decoded total.
+const MAX_UI_FILES: usize = 32;
+const MAX_UI_TOTAL: usize = 2 * 1024 * 1024;
+
+/// Validate the `ui_assets` argument (object: bundle path → Base64 content)
+/// and return its canonical JSON string ("" when absent). Every manifest
+/// `ui[].entry` must exist among the supplied paths.
+fn ui_assets_arg(args: &Value, manifest: &plugin_manifest::Manifest) -> Result<String, ToolError> {
+    let Some(raw) = args.get("ui_assets").filter(|v| !v.is_null()) else {
+        if !manifest.ui.is_empty() {
+            return Err(invalid(
+                "manifest declares ui[] but no ui_assets supplied — pass \
+                 { \"<path>\": \"<base64>\", … } including every declared entry",
+            ));
+        }
+        return Ok(String::new());
+    };
+    let obj = raw.as_object().ok_or_else(|| {
+        invalid("ui_assets must be an object mapping bundle-relative paths to Base64 contents")
+    })?;
+    if obj.len() > MAX_UI_FILES {
+        return Err(invalid(format!(
+            "ui_assets has {} files (max {MAX_UI_FILES})",
+            obj.len()
+        )));
+    }
+    let mut total = 0usize;
+    for (path, content) in obj {
+        if !plugin_manifest::valid_asset_path(path) {
+            return Err(invalid(format!(
+                "ui_assets path `{path}` is invalid — relative [A-Za-z0-9._-] segments, \
+                 no `..`, no leading slash"
+            )));
+        }
+        let b64v = content
+            .as_str()
+            .ok_or_else(|| invalid(format!("ui_assets[`{path}`] must be a Base64 string")))?;
+        let bytes = b64::decode(b64v)
+            .map_err(|e| invalid(format!("ui_assets[`{path}`] is not Base64: {e}")))?;
+        total += bytes.len();
+    }
+    if total > MAX_UI_TOTAL {
+        return Err(invalid(format!(
+            "ui_assets decode to {total} bytes (max {MAX_UI_TOTAL})"
+        )));
+    }
+    for u in &manifest.ui {
+        if !obj.contains_key(&u.entry) {
+            return Err(invalid(format!(
+                "manifest ui entry `{}` is not among the supplied ui_assets paths",
+                u.entry
+            )));
+        }
+    }
+    Ok(serde_json::to_string(raw).expect("a JSON object re-serializes"))
+}
+
 /// Parse + fully validate a `manifest` argument; issues come back as the
 /// structured error list (`plugins_validate` returns them as data instead).
 fn manifest_arg(
@@ -2747,6 +2804,7 @@ async fn plugins_create(state: &AppState, actor: &Actor, args: &Value) -> ToolRe
             }
         }
     }
+    let ui_assets_json = ui_assets_arg(args, &parsed)?;
     let row = plugins_repo::create_plugin(
         &state.db,
         &actor.owner,
@@ -2755,6 +2813,7 @@ async fn plugins_create(state: &AppState, actor: &Actor, args: &Value) -> ToolRe
         &kinds,
         &wasm_b64,
         &wasm_bytes,
+        &ui_assets_json,
         plugins_repo::Author {
             agent: actor.agent.as_deref(),
             run_id: actor.run_id.as_deref(),
@@ -2862,6 +2921,14 @@ async fn plugins_export(state: &AppState, owner: &str, args: &Value) -> ToolResu
     let wasm_b64 = plugins_repo::get_wasm_b64(&state.db, owner, &row.uuid)
         .await?
         .unwrap_or_default();
+    let ui_assets_json = plugins_repo::get_ui_assets_json(&state.db, owner, &row.uuid)
+        .await?
+        .unwrap_or_default();
+    let ui_assets: Value = if ui_assets_json.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&ui_assets_json).unwrap_or_else(|_| json!({}))
+    };
     let manifest: Value = serde_json::from_str(&row.manifest).unwrap_or(Value::Null);
     Ok(json!({
         "name": row.name,
@@ -2869,6 +2936,7 @@ async fn plugins_export(state: &AppState, owner: &str, args: &Value) -> ToolResu
         "version": row.version,
         "manifest": manifest,
         "wasm_b64": wasm_b64,
+        "ui_assets": ui_assets,
         "sha256": row.bundle_sha256,
     }))
 }
@@ -3767,6 +3835,9 @@ fn static_definitions() -> Vec<Value> {
             json!({
                 "manifest": json!({ "type": "object", "description": "the validated manifest" }),
                 "wasm_b64": str_schema("Base64 Extism guest module (required if tools/endpoints declared)"),
+                "ui_assets": json!({ "type": "object", "description":
+                    "bundle-relative path → Base64 content map for ui[] components \
+                     (≤32 files, ≤2MiB decoded; must include every declared entry)" }),
                 "replace": bool_schema("upgrade an existing slug in place (default false)"),
             }),
             &["manifest"],
@@ -3802,8 +3873,8 @@ fn static_definitions() -> Vec<Value> {
         ),
         def(
             "plugins_export",
-            "Export a plugin's full bundle (manifest + wasm_b64 + sha256) for backup or \
-             transfer.",
+            "Export a plugin's full bundle (manifest + wasm_b64 + ui_assets + sha256) for \
+             backup or transfer.",
             json!({ "slug": str_schema("plugin slug (or id)") }),
             &["slug"],
         ),

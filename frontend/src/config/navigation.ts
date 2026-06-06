@@ -8,6 +8,7 @@ import {
   Globe,
   Network,
   PenTool,
+  Puzzle,
   Sparkles,
   Bot,
   type LucideIcon,
@@ -102,6 +103,13 @@ export const navItems: NavItem[] = [
     icon: Bot,
     description: 'Run Claude Code on your Baitler data from the portal.',
     phase: 13,
+  },
+  {
+    label: 'Plugins',
+    path: '/plugins',
+    icon: Puzzle,
+    description: 'Review, enable, and manage agent-built extensions.',
+    phase: 16,
   },
 ];
 
