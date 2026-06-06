@@ -64,14 +64,38 @@ export interface RunStreamHandlers {
  * (disabled runner → 503, concurrent run → 409, validation → 400) surface via
  * `onError` with the HTTP status.
  */
-export async function streamRun(req: CreateRunRequest, handlers: RunStreamHandlers): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}/cli/runs`, {
+export function streamRun(req: CreateRunRequest, handlers: RunStreamHandlers): Promise<void> {
+  return streamSse(
+    `${API_BASE_URL}/cli/runs`,
+    {
       method: 'POST',
-      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
+    },
+    handlers,
+  );
+}
+
+/**
+ * Re-attach to an active run via GET /cli/runs/{id}/events: the server replays
+ * everything the run has emitted so far, then tails live events to completion.
+ * A 409 (run no longer active) surfaces via `onError` — fall back to the run row.
+ */
+export function attachRun(id: string, handlers: RunStreamHandlers): Promise<void> {
+  return streamSse(`${API_BASE_URL}/cli/runs/${id}/events`, {}, handlers);
+}
+
+/** Fetch + parse a run-event SSE stream, shared by start and re-attach. */
+async function streamSse(
+  url: string,
+  init: RequestInit,
+  handlers: RunStreamHandlers,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      credentials: 'include',
+      ...init,
       signal: handlers.signal,
     });
   } catch {

@@ -43,6 +43,7 @@ fn test_config(cli_enabled: bool) -> Config {
             enabled: cli_enabled,
             ..CliConfig::default()
         },
+        workspace_roots: Vec::new(),
         public_page_origin: None,
         secret_key: [7u8; 32],
     }
@@ -229,7 +230,7 @@ async fn workspace_grant_is_validated_against_roots() {
     std::fs::create_dir_all(&inside).unwrap();
 
     let mut cfg = test_config(true);
-    cfg.cli.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    cfg.workspace_roots = vec![root.to_string_lossy().into_owned()];
     let state = baitler_api::build_state(cfg).await.expect("state");
     let app = baitler_api::build_app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -502,7 +503,7 @@ async fn workspace_browse_is_scoped_to_roots() {
     std::fs::write(root.join("notes.txt"), "x").unwrap();
 
     let mut cfg = test_config(true);
-    cfg.cli.workspace_roots = vec![root.to_string_lossy().into_owned()];
+    cfg.workspace_roots = vec![root.to_string_lossy().into_owned()];
     let state = baitler_api::build_state(cfg).await.expect("state");
     let app = baitler_api::build_app(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -602,4 +603,172 @@ async fn runs_are_owner_scoped() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// Poll the run row until it reaches a terminal status (or the deadline).
+async fn wait_for_finish(c: &Client, base: &str, id: &str) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let detail: Value = c
+            .get(format!("{base}/cli/runs/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if detail["status"] != "running" {
+            return detail;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run never finished: {detail}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn run_survives_client_disconnect() {
+    // THE "navigate away mid-run" regression test: dropping the POST response
+    // (the browser aborting the SSE) must NOT kill the run — the background
+    // driver finishes it and persists the outcome.
+    let (base, _state) = spawn(true).await;
+    let c = Client::new();
+
+    let resp = post(
+        &c,
+        format!("{base}/cli/runs"),
+        json!({ "prompt": "long job" }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(resp); // hang up immediately, before any event is consumed
+
+    // The run still completes and the row carries the full terminal outcome.
+    let list: Value = c
+        .get(format!("{base}/cli/runs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = list["runs"][0]["id"].as_str().unwrap().to_string();
+    let detail = wait_for_finish(&c, &base, &id).await;
+    assert_eq!(detail["status"], "succeeded");
+    assert!(detail["result_text"].as_str().unwrap().contains("Mock run"));
+    assert!(detail["finished_at"].is_string());
+}
+
+#[tokio::test]
+async fn reattach_replays_and_tails_events() {
+    // Start a run, abandon the original stream, then re-attach via
+    // GET /cli/runs/{id}/events: the replay + live tail must add up to the
+    // complete event sequence, through the trailing `done`.
+    let (base, _state) = spawn(true).await;
+    let c = Client::new();
+
+    let resp = post(
+        &c,
+        format!("{base}/cli/runs"),
+        json!({ "prompt": "watch me" }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    drop(resp);
+
+    let list: Value = c
+        .get(format!("{base}/cli/runs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = list["runs"][0]["id"].as_str().unwrap().to_string();
+
+    let attach = c
+        .get(format!("{base}/cli/runs/{id}/events"))
+        .send()
+        .await
+        .unwrap();
+    if attach.status() == StatusCode::CONFLICT {
+        // The mock finished before we could re-attach (slow CI scheduling):
+        // the documented fallback is the run row, which must be terminal.
+        let detail = wait_for_finish(&c, &base, &id).await;
+        assert_eq!(detail["status"], "succeeded");
+        return;
+    }
+    assert_eq!(attach.status(), StatusCode::OK);
+    let events = parse_sse(&attach.text().await.unwrap());
+    let seq = types(&events);
+
+    // Replay gives us the leading `run` id event and everything else the
+    // original subscriber would have seen, ending in result + done.
+    assert_eq!(
+        seq.first().map(String::as_str),
+        Some("run"),
+        "events: {seq:?}"
+    );
+    assert!(seq.contains(&"init".to_string()));
+    assert!(seq.contains(&"result".to_string()));
+    assert_eq!(seq.last().map(String::as_str), Some("done"));
+    assert_eq!(events.last().unwrap()["status"], "succeeded");
+}
+
+#[tokio::test]
+async fn events_for_finished_or_unknown_run_errors_cleanly() {
+    let (base, _state) = spawn(true).await;
+    let c = Client::new();
+
+    // Unknown run → 404.
+    let resp = c
+        .get(format!("{base}/cli/runs/nope/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Finished run → 409 (fetch the row instead).
+    let resp = post(&c, format!("{base}/cli/runs"), json!({ "prompt": "quick" })).await;
+    let body = resp.text().await.unwrap(); // consume to completion
+    let events = parse_sse(&body);
+    let id = events[0]["id"].as_str().unwrap().to_string();
+    wait_for_finish(&c, &base, &id).await;
+
+    let resp = c
+        .get(format!("{base}/cli/runs/{id}/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn orphaned_running_rows_are_failed_at_startup() {
+    // A row left `running` by a dead process must be failed by the startup
+    // reconciliation (build_state runs it; here we call the repo fn directly).
+    let (_base, state) = spawn(true).await;
+    baitler_api::cli::repo::create_run(
+        &state.db, "dev", "ghost", "stuck", None, "kb_only", None, None,
+    )
+    .await
+    .unwrap();
+
+    let n = baitler_api::cli::repo::fail_orphaned_runs(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    let row = baitler_api::cli::repo::get_run(&state.db, "dev", "ghost")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "failed");
+    assert_eq!(
+        row.error.as_deref(),
+        Some("interrupted by a server restart")
+    );
+    assert!(row.finished_at.is_some());
 }

@@ -14,7 +14,7 @@ export interface WorkspacePickerProps {
 }
 
 /**
- * Server-side folder picker over the allow-listed `CLAUDE_CLI_WORKSPACE_ROOTS`:
+ * Server-side folder picker over the allow-listed `WORKSPACE_ROOTS`:
  * the top level shows the roots, clicking descends, and "Use this folder" grants
  * the current directory to the run. Only directories the server may grant are
  * ever shown (the browse endpoint re-validates every path).
@@ -64,7 +64,7 @@ export function WorkspacePicker({ open, onClose, onPick }: WorkspacePickerProps)
           ) : data && data.dirs.length === 0 ? (
             <p className="px-3 py-4 text-sm text-muted-foreground">
               {data.roots.length === 0
-                ? 'No folders are allow-listed. Set CLAUDE_CLI_WORKSPACE_ROOTS on the server.'
+                ? 'No folders are allow-listed. Set WORKSPACE_ROOTS on the server.'
                 : 'No subfolders here.'}
             </p>
           ) : (

@@ -249,6 +249,23 @@ async fn handle_tools_call(state: &AppState, actor: &Actor, id: Value, params: &
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    // Workspace (local disk) tools are for external MCP clients only. A
+    // Baitler-spawned agent run (identified by the X-Baitler-Run header its
+    // loopback MCP config stamps) keeps its documented contract: disk access is
+    // the per-run READ-ONLY folder grant, never these read/write tools.
+    if name.starts_with("workspace_") && actor.run_id.is_some() {
+        return protocol::success(
+            id,
+            tool_err(
+                "workspace tools are not available to Baitler-spawned agent runs — \
+                 a run's disk access is its read-only folder grant. To read a local \
+                 folder, ask the user to attach it to the conversation (\"Attach a \
+                 folder\" on the Baitler home) and re-send their request; do not retry \
+                 these tools.",
+            ),
+        );
+    }
+
     match tools::call(state, &actor.owner, name, &args).await {
         Ok(value) => {
             // Record provenance for mutating tools (best-effort; never fail the

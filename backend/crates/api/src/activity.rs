@@ -137,6 +137,13 @@ pub fn entry_for(tool: &str, result: &Value) -> Option<ActivityEntry> {
         "projects_remove_item" => ("project.remove_item", "project"),
         "knowledge_link" => ("knowledge.link", "link"),
         "knowledge_unlink" => ("knowledge.unlink", "link"),
+        // Local-disk workspace tools (external MCP clients; never agent runs).
+        "workspace_write" => ("workspace.write", "workspace"),
+        "workspace_mkdir" => ("workspace.mkdir", "workspace"),
+        "workspace_delete" => ("workspace.delete", "workspace"),
+        "workspace_rmdir" => ("workspace.rmdir", "workspace"),
+        "workspace_move" => ("workspace.move", "workspace"),
+        "workspace_copy" => ("workspace.copy", "workspace"),
         // Everything else (list/get/read/search/export/health/ai_*) is read-only.
         _ => return None,
     };

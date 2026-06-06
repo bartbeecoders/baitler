@@ -301,6 +301,16 @@ same job without Node.
 | `files_write` | Create a file from inline `content_base64`/`content_text`. |
 | `files_delete` | Delete a file. |
 | `folders_create` | Create a folder (optionally nested). |
+| `workspace_roots` | List the allow‑listed local‑disk roots (`WORKSPACE_ROOTS`). |
+| `workspace_list` | List a local directory (name, kind, size, mtime). |
+| `workspace_info` | File/directory metadata; directories include entry counts. |
+| `workspace_read` | Read a local file (UTF‑8 as text, binary as Base64; ≤ 24 MB). |
+| `workspace_write` | Write a local file from text or Base64 (`overwrite` opt‑in). |
+| `workspace_mkdir` | Create a directory (parent must exist). |
+| `workspace_delete` | Delete a local **file**. |
+| `workspace_rmdir` | Delete a local directory (`recursive` opt‑in; roots protected). |
+| `workspace_move` | Move/rename a file or directory to a new full path. |
+| `workspace_copy` | Copy a file to a new full path. |
 | `ai_providers` | List LLM providers/models and which are configured. |
 | `ai_chat` | Run a (non‑streaming) chat completion via a provider. |
 | `export` | Convert arbitrary `html`/`markdown` content to `html`/`markdown`/`pdf`/`docx`. |
@@ -319,6 +329,14 @@ Notes:
 - All tools are scoped to the single dev owner today; when authentication lands,
   the same tools will resolve the real owner from the session with no client
   changes.
+- The `workspace_*` tools manage files on the **server's local disk**, jailed to
+  the directories in `WORKSPACE_ROOTS` (empty = disabled; every path must
+  canonicalize under a root — `..`/symlink escapes are rejected, and the roots
+  themselves can't be deleted/renamed). They are available to **external MCP
+  clients only**: a Baitler‑spawned agent run (identified by its `X-Baitler-Run`
+  header) is refused — a run's disk access stays its per‑run read‑only folder
+  grant. Mutations are recorded in the activity log (`workspace.write`,
+  `workspace.move`, …) attributed to the calling agent.
 
 ---
 

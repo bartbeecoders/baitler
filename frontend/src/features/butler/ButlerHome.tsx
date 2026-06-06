@@ -1,19 +1,21 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Paperclip, Play, Plus, SlidersHorizontal, Square, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
-import { useProviders } from '@/features/ai/api';
-import { useCliStatus, useProjectOptions } from '@/features/cli/api';
+import { useCliStatus, useProjectOptions, useRun, useRuns } from '@/features/cli/api';
 import { EventRow } from '@/features/cli/EventRow';
-import { useAgentChat } from '@/features/cli/useAgentChat';
-import type { AgentProvider, ToolScope } from '@/features/cli/types';
+import { useAgentChat, type Turn } from '@/features/cli/useAgentChat';
+import type { AgentProvider, CliRunSummary, ToolScope } from '@/features/cli/types';
 import { SystemStatus } from '@/features/portal/SystemStatus';
 import { cn } from '@/lib/cn';
+import { type Conversation } from './conversations';
+import { ConversationsPane } from './ConversationsPane';
 import { QUICK_TASKS, type QuickTask } from './quickTasks';
 import { RunReportFeed } from './RunReportFeed';
 import { WorkspacePicker } from './WorkspacePicker';
+import { detectRootedPath } from './workspacePaths';
 
 const SELECT_CLASS = 'h-9 rounded-md border border-input bg-background px-2 text-sm';
 
@@ -31,6 +33,31 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+/** The model of the latest session, from the newest `init` event in the thread. */
+function findSessionModel(turns: Turn[]): string | null {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const events = turns[i]?.events ?? [];
+    for (let j = events.length - 1; j >= 0; j--) {
+      const ev = events[j];
+      if (ev?.type === 'init' && ev.model) return modelLabel(ev.model);
+    }
+  }
+  return null;
+}
+
+/** Human label for a CLI model id: "claude-opus-4-8" → "Opus 4.8". */
+function modelLabel(id: string): string {
+  const parts = id
+    .replace(/^claude-/, '')
+    .split('-')
+    .filter((p) => !/^\d{8}$/.test(p)); // drop date-stamp suffixes
+  const head = parts[0];
+  if (!head) return id;
+  const name = head.charAt(0).toUpperCase() + head.slice(1);
+  const version = parts.slice(1).join('.');
+  return version ? `${name} ${version}` : name;
+}
+
 /**
  * The butler-first home: a conversational command surface. Point the butler at a
  * local code project or documents folder (read-only, allow-listed), tell it what
@@ -38,20 +65,75 @@ function basename(path: string): string {
  */
 export function ButlerHome() {
   const { data: status } = useCliStatus();
-  const { data: providers = [] } = useProviders();
   const { data: projects = [] } = useProjectOptions();
+  const { data: runs = [] } = useRuns();
 
   const [prompt, setPrompt] = useState('');
   const [workspaceDir, setWorkspaceDir] = useState('');
   const [toolScope, setToolScope] = useState<ToolScope>('kb_only');
   const [provider, setProvider] = useState<AgentProvider>('claude_code');
-  const [model, setModel] = useState('');
   const [projectId, setProjectId] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const chat = useAgentChat();
-  const { turns, sessionId, streaming, error, unavailable } = chat;
+  const { turns, sessionId, conversationId, streaming, error, unavailable } = chat;
+
+  // Re-open a past conversation: load its newest run, then seed the thread from
+  // it (once per pick) so the next message resumes that session.
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const { data: openRun } = useRun(openRunId);
+  const seededRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openRun || seededRef.current === openRun.id) return;
+    seededRef.current = openRun.id;
+    chat.seedFromRun(openRun);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRun]);
+
+  /** Re-open a run's conversation: live re-attach while it executes, seed from
+   * the row when finished. Shared by the pane, the report feed, and auto-resume. */
+  const openConversation = (run: CliRunSummary) => {
+    if (streaming) return;
+    if (run.status === 'running') {
+      void chat.attachToRun(run);
+      return;
+    }
+    if (openRunId === run.id && openRun) {
+      // Re-picking the same run after a reset: it's already loaded, so the
+      // seeding effect won't re-fire — seed directly.
+      seededRef.current = openRun.id;
+      chat.seedFromRun(openRun);
+    } else {
+      seededRef.current = null;
+      setOpenRunId(run.id);
+    }
+  };
+
+  const selectConversation = (c: Conversation) => {
+    if (c.id === conversationId) return;
+    const lastRun = runs.find((r) => r.id === c.lastRunId);
+    if (lastRun) openConversation(lastRun);
+  };
+
+  // Coming back to the home page while the butler is still working: re-attach
+  // to the in-flight run automatically (once), so the live thread reappears.
+  const autoAttachedRef = useRef(false);
+  useEffect(() => {
+    if (autoAttachedRef.current || streaming || turns.length > 0) return;
+    const active = runs.find((r) => r.status === 'running');
+    if (!active) return;
+    autoAttachedRef.current = true;
+    void chat.attachToRun(active);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs, streaming, turns.length]);
+
+  const newTask = () => {
+    if (streaming) return;
+    chat.reset();
+    setOpenRunId(null);
+    seededRef.current = null;
+  };
 
   const threadRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -59,10 +141,9 @@ export function ButlerHome() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
-  const anthropicModels = useMemo(
-    () => providers.find((p) => p.id === 'anthropic')?.models ?? [],
-    [providers],
-  );
+  // The model actually in use, as reported by the run stream's `init` event.
+  const sessionModel = findSessionModel(turns);
+
   const providerList = status?.providers ?? [];
   const selectedProvider = providerList.find((p) => p.id === provider);
   const blocked = !!status && !!selectedProvider && !selectedProvider.available;
@@ -89,20 +170,32 @@ export function ButlerHome() {
     e.preventDefault();
     const text = prompt.trim();
     if (!text || streaming || blocked) return;
+    // Typing an allow-listed path counts as attaching it — without the grant
+    // the spawned run cannot read the folder at all (and can't ask mid-run).
+    let dir = workspaceDir;
+    let scope = toolScope;
+    if (!dir) {
+      const detected = detectRootedPath(text, status?.workspace_roots ?? []);
+      if (detected) {
+        dir = detected;
+        scope = 'kb_plus_read';
+        attach(detected); // chip + scope for subsequent turns
+      }
+    }
     setPrompt('');
     await chat.send(text, {
       provider,
-      model: model || undefined,
       project_id: projectId || undefined,
-      workspace_dir: workspaceDir || undefined,
-      tool_scope: toolScope,
+      workspace_dir: dir || undefined,
+      tool_scope: scope,
     });
   };
 
   const conversationActive = turns.length > 0;
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-8">
+    <div className="mx-auto flex w-full max-w-6xl items-start justify-center gap-8">
+      <div className="flex w-full min-w-0 max-w-3xl flex-col gap-8">
       {/* Hero greeting (compact once a conversation starts) */}
       <section className={cn('text-center', conversationActive ? 'pt-0' : 'pt-6 sm:pt-12')}>
         {!conversationActive && (
@@ -220,7 +313,7 @@ export function ButlerHome() {
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={chat.reset}
+                onClick={newTask}
                 disabled={streaming}
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
@@ -261,43 +354,33 @@ export function ButlerHome() {
         />
 
         <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as AgentProvider)}
+            aria-label="Agent provider"
+            className={SELECT_CLASS}
+            disabled={streaming}
+          >
+            {(providerList.length > 0
+              ? providerList
+              : [{ id: 'claude_code' as AgentProvider, label: 'Claude Code', available: true }]
+            ).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.available ? '' : ' (unavailable)'}
+              </option>
+            ))}
+          </select>
+          {provider === 'claude_code' && sessionModel && (
+            <span
+              className="text-xs text-muted-foreground"
+              title="Model in use (reported by the session)"
+            >
+              {sessionModel}
+            </span>
+          )}
           {showSettings && (
             <>
-              <select
-                value={provider}
-                onChange={(e) => {
-                  setProvider(e.target.value as AgentProvider);
-                  setModel('');
-                }}
-                aria-label="Agent provider"
-                className={SELECT_CLASS}
-                disabled={streaming}
-              >
-                {(providerList.length > 0
-                  ? providerList
-                  : [{ id: 'claude_code' as AgentProvider, label: 'Claude Code', available: true }]
-                ).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                    {p.available ? '' : ' (unavailable)'}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                aria-label="Model"
-                className={SELECT_CLASS}
-                disabled={streaming || provider !== 'claude_code'}
-              >
-                <option value="">Default model</option>
-                {provider === 'claude_code' &&
-                  anthropicModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-              </select>
               <select
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
@@ -353,7 +436,7 @@ export function ButlerHome() {
               disabled={streaming || (task.needsFolder && !rootsConfigured)}
               title={
                 task.needsFolder && !rootsConfigured
-                  ? 'Set CLAUDE_CLI_WORKSPACE_ROOTS on the server to grant local folders.'
+                  ? 'Set WORKSPACE_ROOTS on the server to grant local folders.'
                   : undefined
               }
             >
@@ -364,11 +447,20 @@ export function ButlerHome() {
         </div>
       )}
 
-      <RunReportFeed />
+      <RunReportFeed onOpen={openConversation} />
 
       <SystemStatus />
 
       <WorkspacePicker open={pickerOpen} onClose={() => setPickerOpen(false)} onPick={attach} />
+      </div>
+
+      {/* Previous conversations — pick one to continue it */}
+      <ConversationsPane
+        activeConversationId={conversationId}
+        onSelect={selectConversation}
+        disabled={streaming}
+        className="sticky top-6 hidden w-72 shrink-0 lg:flex"
+      />
     </div>
   );
 }

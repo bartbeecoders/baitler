@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { CLI_ROOT, streamRun, useCancelRun } from './api';
-import type { CliRun, CreateRunRequest, RunEvent } from './types';
+import { apiFetch } from '@/lib/api';
+import { attachRun, CLI_ROOT, streamRun, useCancelRun } from './api';
+import type { CliRun, CliRunSummary, CreateRunRequest, RunEvent } from './types';
 
 /** One exchange in the conversation: the user's prompt + the agent's events. */
 export interface Turn {
@@ -56,6 +57,32 @@ export function useAgentChat() {
   // background reader doesn't keep updating unmounted state.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /** Apply one streamed event to the turn at `index` (shared by send + attach). */
+  const applyEvent = (index: number) => (ev: RunEvent) => {
+    if (ev.type === 'run') {
+      setRunId(ev.id);
+      return;
+    }
+    if (ev.type === 'done') {
+      void qc.invalidateQueries({ queryKey: CLI_ROOT });
+      return;
+    }
+    if ((ev.type === 'init' || ev.type === 'result') && ev.session_id) {
+      setSessionId(ev.session_id);
+    }
+    setTurns((prev) =>
+      prev.map((t, i) => (i === index ? { ...t, events: [...t.events, ev] } : t)),
+    );
+  };
+
+  /** Close out the turn at `index` once its stream ends. */
+  const finishTurn = (index: number) => {
+    setStreaming(false);
+    abortRef.current = null;
+    setTurns((prev) => prev.map((t, i) => (i === index ? { ...t, streaming: false } : t)));
+    void qc.invalidateQueries({ queryKey: CLI_ROOT });
+  };
+
   const send = async (text: string, opts: SendOptions) => {
     if (!text.trim() || streaming) return;
 
@@ -84,22 +111,7 @@ export function useAgentChat() {
       },
       {
         signal: controller.signal,
-        onEvent: (ev) => {
-          if (ev.type === 'run') {
-            setRunId(ev.id);
-            return;
-          }
-          if (ev.type === 'done') {
-            void qc.invalidateQueries({ queryKey: CLI_ROOT });
-            return;
-          }
-          if ((ev.type === 'init' || ev.type === 'result') && ev.session_id) {
-            setSessionId(ev.session_id);
-          }
-          setTurns((prev) =>
-            prev.map((t, i) => (i === index ? { ...t, events: [...t.events, ev] } : t)),
-          );
-        },
+        onEvent: applyEvent(index),
         onError: (message, statusCode) => {
           setError(message);
           if (statusCode === 503) setUnavailable(message);
@@ -107,10 +119,48 @@ export function useAgentChat() {
       },
     );
 
-    setStreaming(false);
-    abortRef.current = null;
-    setTurns((prev) => prev.map((t, i) => (i === index ? { ...t, streaming: false } : t)));
-    void qc.invalidateQueries({ queryKey: CLI_ROOT });
+    finishTurn(index);
+  };
+
+  /**
+   * Re-attach to a run that is (or was just) executing in the background: the
+   * server replays everything it has emitted, then tails it live — so a run
+   * started before navigating away can be followed to completion. If the run
+   * finished in the meantime (409), fall back to seeding from its row.
+   */
+  const attachToRun = async (run: CliRunSummary) => {
+    if (streaming) return;
+
+    setConversationId(run.conversation_id ?? newConversationId());
+    setSessionId(run.session_id ?? null);
+    setTurns([{ prompt: run.prompt, events: [], streaming: true }]);
+    setError(null);
+    setUnavailable(null);
+    setRunId(run.id);
+    setStreaming(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let finished = false;
+    await attachRun(run.id, {
+      signal: controller.signal,
+      onEvent: applyEvent(0),
+      onError: (message, statusCode) => {
+        // 409 = no longer active (it finished between listing and attaching).
+        if (statusCode === 409 || statusCode === 404) finished = true;
+        else setError(message);
+      },
+    });
+
+    if (finished) {
+      try {
+        seedFromRun(await apiFetch<CliRun>(`/cli/runs/${run.id}`));
+      } catch {
+        /* keep whatever we have; the feed still shows the run */
+      }
+    }
+    finishTurn(0);
   };
 
   const stop = () => {
@@ -151,11 +201,13 @@ export function useAgentChat() {
   return {
     turns,
     sessionId,
+    conversationId,
     runId,
     streaming,
     error,
     unavailable,
     send,
+    attachToRun,
     stop,
     reset,
     seedFromRun,

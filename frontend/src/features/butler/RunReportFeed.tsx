@@ -1,5 +1,13 @@
 import { Link } from 'react-router-dom';
-import { ArrowUpRight, Ban, CheckCircle2, ClipboardList, Loader2, XCircle } from 'lucide-react';
+import {
+  ArrowUpRight,
+  Ban,
+  CheckCircle2,
+  ClipboardList,
+  Loader2,
+  MessageSquare,
+  XCircle,
+} from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { useRuns } from '@/features/cli/api';
@@ -11,12 +19,18 @@ import { artifactIcon, artifactPath, linkableArtifacts, relativeTime, reportBadg
 const FEED_LIMIT = 8;
 const ARTIFACT_LINK_LIMIT = 6;
 
+export interface RunReportFeedProps {
+  /** Re-open this run's conversation in the composer (live-attaches when the
+   * run is still executing). Cards render an "open" affordance when set. */
+  onOpen?: (run: CliRunSummary) => void;
+}
+
 /**
  * The butler report: recent runs as cards, each summarizing what the run created
  * (from its provenance-correlated report) with deep links into the knowledge
  * base, plus a banner when agent drafts await review.
  */
-export function RunReportFeed() {
+export function RunReportFeed({ onOpen }: RunReportFeedProps = {}) {
   const { data: runs = [] } = useRuns();
   const { data: review } = useReviewQueue();
   const draftCount = (review?.ideas.length ?? 0) + (review?.documents.length ?? 0);
@@ -48,7 +62,7 @@ export function RunReportFeed() {
       <ul className="flex flex-col gap-3">
         {runs.slice(0, FEED_LIMIT).map((run) => (
           <li key={run.id}>
-            <ReportCard run={run} />
+            <ReportCard run={run} onOpen={onOpen} />
           </li>
         ))}
       </ul>
@@ -71,7 +85,7 @@ function StatusIcon({ status }: { status: CliRunSummary['status'] }) {
   }
 }
 
-function ReportCard({ run }: { run: CliRunSummary }) {
+function ReportCard({ run, onOpen }: { run: CliRunSummary; onOpen?: (run: CliRunSummary) => void }) {
   const finished = run.status !== 'running';
   const { data: report } = useRunReport(run.id, finished);
 
@@ -84,9 +98,30 @@ function ReportCard({ run }: { run: CliRunSummary }) {
         <span className="mt-0.5 shrink-0">
           <StatusIcon status={run.status} />
         </span>
-        <p className="min-w-0 flex-1 text-sm line-clamp-2" title={run.prompt}>
-          {run.prompt}
-        </p>
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={() => onOpen(run)}
+            title={finished ? 'Re-open this conversation' : 'Follow this run live'}
+            className="min-w-0 flex-1 text-left text-sm line-clamp-2 hover:text-primary-strong hover:underline"
+          >
+            {run.prompt}
+          </button>
+        ) : (
+          <p className="min-w-0 flex-1 text-sm line-clamp-2" title={run.prompt}>
+            {run.prompt}
+          </p>
+        )}
+        {onOpen && (
+          <button
+            type="button"
+            onClick={() => onOpen(run)}
+            aria-label={finished ? 'Re-open this conversation' : 'Follow this run live'}
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
         <span className="shrink-0 text-xs text-muted-foreground">
           {relativeTime(run.created_at)}
         </span>

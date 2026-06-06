@@ -115,6 +115,22 @@ pub struct RunOutcome {
     pub error: Option<String>,
 }
 
+/// Fail every run still marked `running` (all owners). Called once at startup:
+/// runs are driven by process-local tasks, so a row left `running` from a
+/// previous process is an orphan that would otherwise look live forever.
+pub async fn fail_orphaned_runs(db: &Db) -> AppResult<usize> {
+    let mut res = db
+        .query(
+            "UPDATE cli_run SET status = 'failed', \
+             error = 'interrupted by a server restart', \
+             finished_at = time::now() WHERE status = 'running' RETURN AFTER",
+        )
+        .await?
+        .check()?;
+    let rows: Vec<CliRunRow> = res.take(0)?;
+    Ok(rows.len())
+}
+
 /// Record a run's terminal state, stamping `finished_at`.
 pub async fn finalize_run(db: &Db, owner: &str, uuid: &str, outcome: &RunOutcome) -> AppResult<()> {
     db.query(

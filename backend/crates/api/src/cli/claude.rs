@@ -40,6 +40,23 @@ use super::AGENT_LABEL;
 /// Allowed tool token that approves *all* tools from the Baitler MCP server.
 const BAITLER_MCP_TOOLS: &str = "mcp__baitler";
 
+/// Operating constraints appended to every spawned run's system prompt, so the
+/// agent knows what it actually can and cannot do (Phase 13's lockdown is
+/// invisible from inside the session): the run is headless — a tool-permission
+/// denial is FINAL, there is no prompt anyone can approve — and the way to get
+/// disk access is to have the user attach the folder, not to retry.
+const RUN_PREAMBLE: &str = "You are Baitler's butler agent, spawned non-interactively \
+from the Baitler web portal. Tool-permission prompts can NEVER be approved mid-run: \
+if a tool call is denied, that access does not exist for this run — do not retry it \
+and do not ask the user to approve anything in a terminal. Your local-disk access is \
+exactly the folder attached to this conversation (if any); the Baitler `workspace_*` \
+MCP tools are reserved for external clients and always refuse spawned runs. If the \
+user names a local path you cannot read — even one inside the server's allow-listed \
+roots — ask them to attach that folder via \"Attach a folder\" on the Baitler home \
+and re-send their request. For knowledge-base work, prefer the Baitler MCP tools \
+(knowledge_search to find things; ideas/documents/pages tools to save results — \
+agent writes land as drafts for the user's review).";
+
 pub struct ClaudeCliRunner {
     cfg: CliConfig,
     /// Bearer token for the loopback `/mcp` (mirrors `MCP_AUTH_TOKEN`), if set.
@@ -370,7 +387,8 @@ pub(crate) fn build_argv(
     ];
 
     // A user-granted local folder is added as a read-only working dir.
-    if let Some(ws) = spec.workspace_dir.as_deref().filter(|w| !w.is_empty()) {
+    let workspace = spec.workspace_dir.as_deref().filter(|w| !w.is_empty());
+    if let Some(ws) = workspace {
         a.push("--add-dir".into());
         a.push(ws.to_string());
     }
@@ -380,18 +398,39 @@ pub(crate) fn build_argv(
         a.push(model);
     }
 
-    // Orienting context (e.g. the current app page) appended to the system prompt.
-    if let Some(context) = spec.context.as_deref().filter(|c| !c.trim().is_empty()) {
-        a.push("--append-system-prompt".into());
-        a.push(context.to_string());
+    // Context appended to the system prompt. Always starts with the operating
+    // constraints — the run is non-interactive and its disk access is exactly
+    // the attached folder — so the agent never stalls telling the user to
+    // approve a permission prompt nobody can answer (and knows the recovery is
+    // "attach the folder"). Then the folder grant (so an unqualified "list the
+    // files" resolves to it rather than the empty sandbox cwd), then the
+    // caller's note (e.g. the current app page).
+    let mut context_parts: Vec<String> = vec![RUN_PREAMBLE.to_string()];
+    match workspace {
+        Some(ws) => context_parts.push(format!(
+            "The user attached the local folder {ws} to this conversation; it is your \
+             ONLY local-disk access, read-only via the Read, Glob, and Grep tools. \
+             When they refer to \"the folder\", \"these files\", or ask about files \
+             without naming a location, they mean that folder."
+        )),
+        None => context_parts.push(
+            "No local folder is attached to this conversation, so you have NO \
+             local-disk access this run."
+                .to_string(),
+        ),
     }
+    if let Some(context) = spec.context.as_deref().filter(|c| !c.trim().is_empty()) {
+        context_parts.push(context.to_string());
+    }
+    a.push("--append-system-prompt".into());
+    a.push(context_parts.join("\n\n"));
 
     // Pre-approve exactly the Baitler MCP tools (plus read-only file tools when
     // asked for / a folder is granted), so the non-interactive run never blocks on
     // a permission prompt. A granted workspace also gets Glob/Grep so the agent can
     // find files in it; host Bash/Write/Edit stay denied unless allow_host_tools.
     let mut allowed = vec![BAITLER_MCP_TOOLS.to_string()];
-    let has_workspace = spec.workspace_dir.as_deref().is_some_and(|w| !w.is_empty());
+    let has_workspace = workspace.is_some();
     if spec.tool_scope == ToolScope::KbPlusRead || has_workspace {
         allowed.push("Read".into());
     }
@@ -626,28 +665,57 @@ mod tests {
         let i = argv.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(argv[i + 1], "mcp__baitler,Read,Glob,Grep");
         assert!(argv.join(" ").contains("--disallowedTools Bash,Write,Edit"));
-    }
 
-    #[test]
-    fn context_appends_system_prompt() {
-        let cfg = CliConfig::default();
-        let mut s = spec(None, ToolScope::KbOnly, None);
-        s.context = Some("The user is on the Files page.".into());
-        let argv = build_argv(&cfg, &s, Path::new("/sb"), Path::new("/sb/mcp.json"));
+        // The agent is TOLD about the folder, so an unqualified "list the files"
+        // resolves to it instead of the empty sandbox cwd.
         let i = argv
             .iter()
             .position(|a| a == "--append-system-prompt")
             .unwrap();
-        assert_eq!(argv[i + 1], "The user is on the Files page.");
+        assert!(argv[i + 1].contains("/home/bart/Pictures"));
+        assert!(argv[i + 1].contains("read-only"));
+    }
 
-        // Omitted when there's no context.
-        let plain = build_argv(
-            &cfg,
-            &spec(None, ToolScope::KbOnly, None),
-            Path::new("/sb"),
-            Path::new("/sb/mcp.json"),
+    /// The one `--append-system-prompt` value for a spec.
+    fn system_prompt(cfg: &CliConfig, s: &RunSpec) -> String {
+        let argv = build_argv(cfg, s, Path::new("/sb"), Path::new("/sb/mcp.json"));
+        assert_eq!(
+            argv.iter()
+                .filter(|a| *a == "--append-system-prompt")
+                .count(),
+            1
         );
-        assert!(!plain.iter().any(|a| a == "--append-system-prompt"));
+        let i = argv
+            .iter()
+            .position(|a| a == "--append-system-prompt")
+            .unwrap();
+        argv[i + 1].clone()
+    }
+
+    #[test]
+    fn system_prompt_states_constraints_and_context() {
+        let cfg = CliConfig::default();
+
+        // Every run gets the operating-constraints preamble; with no folder it
+        // says so explicitly (the headless run can't be granted access later).
+        let plain = system_prompt(&cfg, &spec(None, ToolScope::KbOnly, None));
+        assert!(plain.starts_with("You are Baitler's butler agent"));
+        assert!(plain.contains("NEVER be approved"));
+        assert!(plain.contains("NO local-disk access"));
+
+        // Caller context (e.g. the current app page) is appended after.
+        let mut s = spec(None, ToolScope::KbOnly, None);
+        s.context = Some("The user is on the Files page.".into());
+        let p = system_prompt(&cfg, &s);
+        assert!(p.starts_with("You are Baitler's butler agent"));
+        assert!(p.ends_with("The user is on the Files page."));
+
+        // An attached folder replaces the no-access note with the grant.
+        s.workspace_dir = Some("/home/bart/Pictures".into());
+        let p = system_prompt(&cfg, &s);
+        assert!(p.contains("/home/bart/Pictures"));
+        assert!(!p.contains("NO local-disk access"));
+        assert!(p.ends_with("The user is on the Files page."));
     }
 
     #[test]

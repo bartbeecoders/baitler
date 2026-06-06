@@ -84,7 +84,7 @@ serves MCP over **Streamable HTTP** at `POST /mcp` (in-process, reusing the same
 repos/DB — JSON-RPC 2.0, JSON-response variant, `GET`/`DELETE`→405). A second binary
 `baitler-mcp` (`src/bin/mcp_stdio.rs`) is a **stdio↔HTTP bridge** for clients that only
 launch stdio servers; it forwards to a running server's `/mcp` and never opens the DB
-(no RocksDB lock conflict). **70 tools** cover ideas/documents/files/folders/pages/mindmaps/diagrams/superpages/ai/export/health/review/cli-agent
+(no RocksDB lock conflict). **80 tools** cover ideas/documents/files/folders/pages/mindmaps/diagrams/superpages/ai/export/health/review/cli-agent/workspace
 plus the **Phase 11 knowledge layer** (`src/knowledge/`): `project` groupings (membership via
 each item's `project_id`), a symmetric `kn_link` cross-type graph, BM25 full-text
 `knowledge_search` (analyzer + per-field SEARCH indexes, migrations 0007/0008), and an
@@ -114,8 +114,17 @@ run id from `X-Baitler-Run` — stamped by the CLI runner's loopback MCP config)
 `handle` → `tools::call`; mutating tools log one activity row centrally, now carrying `run_id`
 (migration 0017) so `GET /cli/runs/{id}/report` can aggregate exactly what a run created (the
 **butler report**: artifacts + per-action counts). `GET /cli/workspace/browse` lists directories
-strictly under `CLAUDE_CLI_WORKSPACE_ROOTS` (same canonicalize-under-roots check as a grant) for
-the folder-attach picker; `/activity` + the `activity_list` tool take a `run_id` filter. All
+strictly under `WORKSPACE_ROOTS` (renamed from `CLAUDE_CLI_WORKSPACE_ROOTS`, which still works as a
+legacy alias; now a top-level `Config.workspace_roots` since it backs more than the CLI runner) for
+the folder-attach picker; `/activity` + the `activity_list` tool take a `run_id` filter.
+The **workspace file-tools extension** (`src/workspace.rs` + `workspace_*` in `mcp/tools.rs`) gives
+external MCP clients full local-disk file management (roots/list/info/read/write/mkdir/delete/rmdir/
+move/copy) jailed to `WORKSPACE_ROOTS`: every path must canonicalize under a root (two resolution
+modes — existing paths, and `resolve_for_create` for not-yet-existing targets whose parent must
+resolve under a root with no `..` segments), destructive ops refuse the roots themselves, payloads
+cap at 24 MB, and mutations log `workspace.*` activity rows. **Baitler-spawned agent runs are
+refused** these tools at the protocol layer (`X-Baitler-Run` ⇒ rejected before dispatch) so a run's
+disk access remains its per-run read-only grant. All
 tools share the REST handlers' validation, owner-scoped to the dev owner until auth lands.
 The MCP catalog drift guard (`call()` match + `known` list + count assert in `mcp/tools.rs`) must
 move in lockstep when adding a tool. Config: `MCP_ENABLED` (default true), `MCP_AUTH_TOKEN`
@@ -130,9 +139,14 @@ Features built: **butler-first home** (redesign v2: `/` is the lazy `ButlerHome`
 `src/features/butler/` — greeting + command composer with an attach-a-folder `WorkspacePicker`
 over `/cli/workspace/browse`, quick-task chips in `quickTasks.ts`, a live transcript, and a
 `RunReportFeed` of run cards built from `/cli/runs/{id}/report` with deep links + a
-drafts-awaiting-review banner; the conversation state machine is the shared
-`features/cli/useAgentChat.ts` + `EventRow.tsx`, also used by `AgentPanel`/dock; the old
-Dashboard card grid is gone and the agent dock is suppressed on `/` and `/agent`),
+drafts-awaiting-review banner, plus a right-hand `ConversationsPane` (runs grouped by
+`conversation_id` via `conversations.ts`) to re-open past chats; the conversation state machine
+is the shared `features/cli/useAgentChat.ts` + `EventRow.tsx`, also used by `AgentPanel`/dock;
+the old Dashboard card grid is gone and the agent dock is suppressed on `/` and `/agent`.
+**Runs survive navigation**: the backend drives each run in a background task publishing into
+the `RunRegistry` event hub (atomic replay + live broadcast), `GET /cli/runs/{id}/events`
+re-attaches while active (409 once finished → fall back to the run row), and `ButlerHome`
+auto-reattaches to a running run on mount / when picked from the pane),
 Files (Phase 4), Ideas (Phase 5, reusable MarkdownEditor),
 AI (Phase 6: multi-provider chat via a Mock + OpenAI/OpenRouter/Anthropic adapter behind an
 `LlmProvider` trait; SSE streaming; per-owner API keys encrypted at rest with `APP_SECRET`),

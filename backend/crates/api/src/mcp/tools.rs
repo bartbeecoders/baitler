@@ -178,6 +178,19 @@ pub async fn call(state: &AppState, owner: &str, name: &str, args: &Value) -> To
         "cli_runs_list" => cli_runs_list(state, owner, args).await,
         "cli_runs_get" => cli_runs_get(state, owner, args).await,
         "cli_run_cancel" => cli_run_cancel(state, owner, args).await,
+        // Workspace (local disk, jailed to WORKSPACE_ROOTS). NOT available to
+        // Baitler-spawned agent runs — the protocol layer rejects those calls
+        // before dispatch (see `mcp::handle_tools_call`).
+        "workspace_roots" => workspace_roots_tool(state).await,
+        "workspace_list" => workspace_list(state, args).await,
+        "workspace_info" => workspace_info(state, args).await,
+        "workspace_read" => workspace_read(state, args).await,
+        "workspace_write" => workspace_write(state, args).await,
+        "workspace_mkdir" => workspace_mkdir(state, args).await,
+        "workspace_delete" => workspace_delete(state, args).await,
+        "workspace_rmdir" => workspace_rmdir(state, args).await,
+        "workspace_move" => workspace_move(state, args).await,
+        "workspace_copy" => workspace_copy(state, args).await,
         // AI
         "ai_providers" => ai_providers(state, owner).await,
         "ai_chat" => ai_chat(state, owner, args).await,
@@ -214,6 +227,10 @@ fn opt_trimmed(args: &Value, key: &str) -> Option<String> {
 
 fn opt_usize(args: &Value, key: &str) -> Option<usize> {
     args.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
+}
+
+fn opt_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|v| v.as_bool())
 }
 
 fn opt_f32(args: &Value, key: &str) -> Option<f32> {
@@ -803,8 +820,8 @@ async fn files_import(state: &AppState, owner: &str, args: &Value) -> ToolResult
             .ok_or_else(|| invalid("target folder does not exist"))?;
     }
 
-    let target = crate::cli::resolve_under_roots(&state.config.cli.workspace_roots, &path)
-        .map_err(invalid)?;
+    let target =
+        crate::cli::resolve_under_roots(&state.config.workspace_roots, &path).map_err(invalid)?;
 
     // Collect candidate files (a single file, or a directory walk).
     let mut files: Vec<std::path::PathBuf> = Vec::new();
@@ -1967,7 +1984,7 @@ async fn cli_status(state: &AppState, owner: &str) -> ToolResult {
                 "detail": minimax_detail,
             },
         ],
-        "workspace_roots": cli.workspace_roots,
+        "workspace_roots": state.config.workspace_roots,
     }))
 }
 
@@ -2149,6 +2166,343 @@ async fn collection_export(state: &AppState, owner: &str, args: &Value) -> ToolR
         "exported": true, "id": project_id, "name": project.name,
         "documents": members.documents.len(), "format": target.extension(), "file": file
     }))
+}
+
+// ── Workspace (local disk, jailed to WORKSPACE_ROOTS) ────────────────────────
+//
+// Generic local file management for MCP clients, against the same allow-listed
+// roots as the run grant + browse picker. Every path is resolved through
+// `crate::workspace` (canonicalize-under-roots), destructive ops refuse the
+// roots themselves, and read/write payloads are capped at `MAX_BLOB`. These
+// tools are host-level (not owner-scoped): the jail is the configured roots.
+
+/// Max entries returned by one `workspace_list` call.
+const MAX_WS_ENTRIES: usize = 500;
+
+fn ws_roots(state: &AppState) -> Result<&[String], ToolError> {
+    let roots = state.config.workspace_roots.as_slice();
+    if roots.is_empty() {
+        return Err(invalid(
+            "workspace tools are disabled — set WORKSPACE_ROOTS on the server",
+        ));
+    }
+    Ok(roots)
+}
+
+/// Resolve an existing path under the roots (read/list/delete/move-source).
+fn ws_existing(state: &AppState, path: &str) -> Result<std::path::PathBuf, ToolError> {
+    crate::workspace::resolve_under_roots(ws_roots(state)?, path).map_err(invalid)
+}
+
+/// Resolve a possibly-new path under the roots (write/mkdir/destinations).
+fn ws_target(state: &AppState, path: &str) -> Result<std::path::PathBuf, ToolError> {
+    crate::workspace::resolve_for_create(ws_roots(state)?, path).map_err(invalid)
+}
+
+/// Refuse destructive operations on an allow-listed root itself.
+fn ws_guard_root(state: &AppState, target: &std::path::Path) -> Result<(), ToolError> {
+    if crate::workspace::is_root(&state.config.workspace_roots, target) {
+        return Err(invalid("refusing to modify an allow-listed root itself"));
+    }
+    Ok(())
+}
+
+fn unix_secs(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {
+    t.ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+fn ws_name(p: &std::path::Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string_lossy().into_owned())
+}
+
+/// The common result shape: `id`/`name` feed the central activity logger.
+fn ws_entry(p: &std::path::Path) -> Value {
+    json!({ "id": p.to_string_lossy(), "path": p.to_string_lossy(), "name": ws_name(p) })
+}
+
+fn io_err(action: &str, e: std::io::Error) -> ToolError {
+    invalid(format!("{action} failed: {e}"))
+}
+
+async fn workspace_roots_tool(state: &AppState) -> ToolResult {
+    let roots: Vec<Value> = ws_roots(state)?
+        .iter()
+        .map(|r| {
+            let canon = std::fs::canonicalize(r).ok();
+            json!({
+                "path": canon.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| r.clone()),
+                "exists": canon.is_some(),
+            })
+        })
+        .collect();
+    Ok(json!({ "roots": roots }))
+}
+
+async fn workspace_list(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_existing(state, &req_str(args, "path")?)?;
+    if !target.is_dir() {
+        return Err(invalid(format!("not a directory: {}", target.display())));
+    }
+    let limit = opt_usize(args, "limit")
+        .unwrap_or(MAX_WS_ENTRIES)
+        .clamp(1, MAX_WS_ENTRIES);
+
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    let mut rd = tokio::fs::read_dir(&target)
+        .await
+        .map_err(|e| io_err("list", e))?;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if entries.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Don't follow symlinks here: report them as their own kind.
+        let meta = tokio::fs::symlink_metadata(entry.path()).await.ok();
+        let kind = match &meta {
+            Some(m) if m.is_dir() => "dir",
+            Some(m) if m.is_symlink() => "symlink",
+            _ => "file",
+        };
+        entries.push(json!({
+            "name": name,
+            "path": entry.path().to_string_lossy(),
+            "kind": kind,
+            "size": meta.as_ref().map(|m| m.len()),
+            "modified_unix": meta.as_ref().and_then(|m| unix_secs(m.modified())),
+        }));
+    }
+    entries.sort_by(|a, b| {
+        a["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_lowercase()
+            .cmp(&b["name"].as_str().unwrap_or_default().to_lowercase())
+    });
+    Ok(json!({
+        "path": target.to_string_lossy(),
+        "entries": entries,
+        "truncated": truncated,
+    }))
+}
+
+async fn workspace_info(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_existing(state, &req_str(args, "path")?)?;
+    let meta = std::fs::metadata(&target).map_err(|e| io_err("stat", e))?;
+    let mut out = json!({
+        "path": target.to_string_lossy(),
+        "name": ws_name(&target),
+        "kind": if meta.is_dir() { "dir" } else { "file" },
+        "size": meta.len(),
+        "readonly": meta.permissions().readonly(),
+        "modified_unix": unix_secs(meta.modified()),
+        "created_unix": unix_secs(meta.created()),
+    });
+    if meta.is_dir() {
+        // Directory info: how much is directly inside.
+        let (mut files, mut dirs) = (0u64, 0u64);
+        if let Ok(rd) = std::fs::read_dir(&target) {
+            for entry in rd.flatten() {
+                match entry.file_type() {
+                    Ok(t) if t.is_dir() => dirs += 1,
+                    _ => files += 1,
+                }
+            }
+        }
+        out["entries"] = json!({ "files": files, "dirs": dirs });
+    }
+    Ok(out)
+}
+
+async fn workspace_read(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_existing(state, &req_str(args, "path")?)?;
+    if !target.is_file() {
+        return Err(invalid(format!("not a file: {}", target.display())));
+    }
+    let meta = std::fs::metadata(&target).map_err(|e| io_err("stat", e))?;
+    if meta.len() as usize > MAX_BLOB {
+        return Err(invalid(format!(
+            "file exceeds the {MAX_BLOB}-byte tool cap ({} bytes)",
+            meta.len()
+        )));
+    }
+    let bytes = tokio::fs::read(&target)
+        .await
+        .map_err(|e| io_err("read", e))?;
+    let mut out = ws_entry(&target);
+    out["size"] = json!(bytes.len());
+    match String::from_utf8(bytes) {
+        Ok(text) => {
+            out["encoding"] = json!("utf8");
+            out["content"] = json!(text);
+        }
+        Err(e) => {
+            out["encoding"] = json!("base64");
+            out["content"] = json!(b64::encode(e.as_bytes()));
+        }
+    }
+    Ok(out)
+}
+
+async fn workspace_write(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_target(state, &req_str(args, "path")?)?;
+    let overwrite = opt_bool(args, "overwrite").unwrap_or(false);
+    let existed = target.exists();
+    if existed && !overwrite {
+        return Err(invalid(format!(
+            "already exists (pass overwrite=true to replace): {}",
+            target.display()
+        )));
+    }
+    if existed && !target.is_file() {
+        return Err(invalid(format!("not a file: {}", target.display())));
+    }
+
+    let text = opt_str(args, "content");
+    let b64s = opt_str(args, "content_base64");
+    let bytes: Vec<u8> = match (text, b64s) {
+        (Some(t), None) => t.into_bytes(),
+        (None, Some(b)) => {
+            b64::decode(&b).map_err(|e| invalid(format!("invalid base64 content: {e}")))?
+        }
+        (Some(_), Some(_)) => return Err(invalid("pass `content` OR `content_base64`, not both")),
+        (None, None) => return Err(invalid("missing `content` (text) or `content_base64`")),
+    };
+    if bytes.len() > MAX_BLOB {
+        return Err(invalid(format!(
+            "content exceeds the {MAX_BLOB}-byte tool cap"
+        )));
+    }
+    tokio::fs::write(&target, &bytes)
+        .await
+        .map_err(|e| io_err("write", e))?;
+    let mut out = ws_entry(&target);
+    out["size"] = json!(bytes.len());
+    out["created"] = json!(!existed);
+    Ok(out)
+}
+
+async fn workspace_mkdir(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_target(state, &req_str(args, "path")?)?;
+    if target.exists() {
+        return Err(invalid(format!("already exists: {}", target.display())));
+    }
+    std::fs::create_dir(&target).map_err(|e| io_err("mkdir", e))?;
+    Ok(ws_entry(&target))
+}
+
+async fn workspace_delete(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_existing(state, &req_str(args, "path")?)?;
+    if !target.is_file() {
+        return Err(invalid(format!(
+            "not a file (use workspace_rmdir for directories): {}",
+            target.display()
+        )));
+    }
+    std::fs::remove_file(&target).map_err(|e| io_err("delete", e))?;
+    let mut out = ws_entry(&target);
+    out["deleted"] = json!(true);
+    Ok(out)
+}
+
+async fn workspace_rmdir(state: &AppState, args: &Value) -> ToolResult {
+    let target = ws_existing(state, &req_str(args, "path")?)?;
+    if !target.is_dir() {
+        return Err(invalid(format!("not a directory: {}", target.display())));
+    }
+    ws_guard_root(state, &target)?;
+    let recursive = opt_bool(args, "recursive").unwrap_or(false);
+    let res = if recursive {
+        std::fs::remove_dir_all(&target)
+    } else {
+        std::fs::remove_dir(&target)
+    };
+    res.map_err(|e| {
+        if !recursive && e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+            invalid(format!(
+                "directory is not empty (pass recursive=true): {}",
+                target.display()
+            ))
+        } else {
+            io_err("rmdir", e)
+        }
+    })?;
+    let mut out = ws_entry(&target);
+    out["deleted"] = json!(true);
+    out["recursive"] = json!(recursive);
+    Ok(out)
+}
+
+async fn workspace_move(state: &AppState, args: &Value) -> ToolResult {
+    let src = ws_existing(state, &req_str(args, "from")?)?;
+    ws_guard_root(state, &src)?;
+    let dest = ws_target(state, &req_str(args, "to")?)?;
+    if dest == src {
+        return Err(invalid("`from` and `to` are the same path"));
+    }
+    let overwrite = opt_bool(args, "overwrite").unwrap_or(false);
+    if dest.exists() {
+        if !overwrite {
+            return Err(invalid(format!(
+                "destination already exists (pass overwrite=true): {}",
+                dest.display()
+            )));
+        }
+        if dest.is_dir() {
+            return Err(invalid(format!(
+                "destination is a directory (pass the full target path): {}",
+                dest.display()
+            )));
+        }
+    }
+    match std::fs::rename(&src, &dest) {
+        Ok(()) => {}
+        // EXDEV: across filesystems. Fall back to copy+delete for files.
+        Err(e) if e.raw_os_error() == Some(18) && src.is_file() => {
+            std::fs::copy(&src, &dest).map_err(|e| io_err("copy", e))?;
+            std::fs::remove_file(&src).map_err(|e| io_err("remove source", e))?;
+        }
+        Err(e) if e.raw_os_error() == Some(18) => {
+            return Err(invalid(
+                "cannot move a directory across filesystems — copy its files instead",
+            ));
+        }
+        Err(e) => return Err(io_err("move", e)),
+    }
+    let mut out = ws_entry(&dest);
+    out["from"] = json!(src.to_string_lossy());
+    Ok(out)
+}
+
+async fn workspace_copy(state: &AppState, args: &Value) -> ToolResult {
+    let src = ws_existing(state, &req_str(args, "from")?)?;
+    if !src.is_file() {
+        return Err(invalid(format!(
+            "only files can be copied (got a directory): {}",
+            src.display()
+        )));
+    }
+    let dest = ws_target(state, &req_str(args, "to")?)?;
+    if dest == src {
+        return Err(invalid("`from` and `to` are the same path"));
+    }
+    if dest.exists() && !opt_bool(args, "overwrite").unwrap_or(false) {
+        return Err(invalid(format!(
+            "destination already exists (pass overwrite=true): {}",
+            dest.display()
+        )));
+    }
+    let size = std::fs::copy(&src, &dest).map_err(|e| io_err("copy", e))?;
+    let mut out = ws_entry(&dest);
+    out["from"] = json!(src.to_string_lossy());
+    out["size"] = json!(size);
+    Ok(out)
 }
 
 // ── Tool catalog (advertised via `tools/list`) ────────────────────────────────
@@ -2872,6 +3226,92 @@ pub fn definitions() -> Vec<Value> {
             json!({ "id": str_schema("run id") }),
             &["id"],
         ),
+        // Workspace (local disk, jailed to WORKSPACE_ROOTS)
+        def(
+            "workspace_roots",
+            "List the host directories workspace tools may access (the configured \
+             WORKSPACE_ROOTS allow-list). Every workspace path must live under one of these.",
+            json!({}),
+            &[],
+        ),
+        def(
+            "workspace_list",
+            "List a workspace directory: name, kind (file|dir|symlink), size, mtime per entry.",
+            json!({
+                "path": str_schema("absolute directory path (within a workspace root)"),
+                "limit": int_schema("max entries (default and max 500)"),
+            }),
+            &["path"],
+        ),
+        def(
+            "workspace_info",
+            "File or directory metadata: kind, size, mtime/ctime (unix seconds), readonly; \
+             directories include direct file/dir counts.",
+            json!({ "path": str_schema("absolute path (within a workspace root)") }),
+            &["path"],
+        ),
+        def(
+            "workspace_read",
+            "Read a workspace file (max 24 MB). UTF-8 files come back as text \
+             (encoding=utf8); binary files Base64 (encoding=base64).",
+            json!({ "path": str_schema("absolute file path (within a workspace root)") }),
+            &["path"],
+        ),
+        def(
+            "workspace_write",
+            "Write a workspace file from text or Base64 (max 24 MB). Fails if the file \
+             exists unless overwrite=true; the parent directory must already exist.",
+            json!({
+                "path": str_schema("absolute file path (within a workspace root)"),
+                "content": str_schema("text content (UTF-8)"),
+                "content_base64": str_schema("binary content, Base64-encoded (alternative to `content`)"),
+                "overwrite": bool_schema("replace an existing file (default false)"),
+            }),
+            &["path"],
+        ),
+        def(
+            "workspace_mkdir",
+            "Create one new directory (the parent must already exist).",
+            json!({ "path": str_schema("absolute directory path (within a workspace root)") }),
+            &["path"],
+        ),
+        def(
+            "workspace_delete",
+            "Delete a workspace FILE (directories: use workspace_rmdir).",
+            json!({ "path": str_schema("absolute file path (within a workspace root)") }),
+            &["path"],
+        ),
+        def(
+            "workspace_rmdir",
+            "Delete a workspace directory. Must be empty unless recursive=true. \
+             Allow-listed roots themselves are protected.",
+            json!({
+                "path": str_schema("absolute directory path (within a workspace root)"),
+                "recursive": bool_schema("delete contents too (default false)"),
+            }),
+            &["path"],
+        ),
+        def(
+            "workspace_move",
+            "Move or RENAME a file/directory to a new full path (both within the roots). \
+             Cross-filesystem moves are supported for files.",
+            json!({
+                "from": str_schema("absolute source path"),
+                "to": str_schema("absolute destination path (the new full path, not a parent dir)"),
+                "overwrite": bool_schema("replace an existing destination file (default false)"),
+            }),
+            &["from", "to"],
+        ),
+        def(
+            "workspace_copy",
+            "Copy a workspace FILE to a new full path (both within the roots).",
+            json!({
+                "from": str_schema("absolute source file path"),
+                "to": str_schema("absolute destination path (the new full path, not a parent dir)"),
+                "overwrite": bool_schema("replace an existing destination (default false)"),
+            }),
+            &["from", "to"],
+        ),
         // Conversion / export
         def(
             "export",
@@ -2970,6 +3410,16 @@ mod tests {
             "cli_runs_list",
             "cli_runs_get",
             "cli_run_cancel",
+            "workspace_roots",
+            "workspace_list",
+            "workspace_info",
+            "workspace_read",
+            "workspace_write",
+            "workspace_mkdir",
+            "workspace_delete",
+            "workspace_rmdir",
+            "workspace_move",
+            "workspace_copy",
             "ai_providers",
             "ai_chat",
             "export",

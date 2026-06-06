@@ -34,6 +34,7 @@ fn test_config() -> Config {
             auth_token: None,
         },
         cli: CliConfig::default(),
+        workspace_roots: Vec::new(),
         public_page_origin: None,
         secret_key: [9u8; 32],
     }

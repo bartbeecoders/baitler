@@ -60,6 +60,12 @@ pub struct Config {
     pub mcp: McpConfig,
     /// Claude Code CLI runner settings (Phase 13).
     pub cli: CliConfig,
+    /// Absolute host directories Baitler features may touch on the local disk:
+    /// the per-run **read-only** folder grant for agent runs, the workspace
+    /// browse picker, and the MCP `workspace_*` file tools. Parsed from
+    /// `WORKSPACE_ROOTS` (legacy alias: `CLAUDE_CLI_WORKSPACE_ROOTS`); empty
+    /// (default) disables all local-disk access.
+    pub workspace_roots: Vec<String>,
     /// Absolute origin that public pages (`GET /p/{slug}`, Phase 12) are served
     /// from, used to build absolute share URLs. `None` → share URLs stay
     /// origin-relative. For real isolation this MUST differ from the app/cookie
@@ -105,10 +111,6 @@ pub struct CliConfig {
     /// When false (the default), host `Bash`/`Write`/`Edit` are disallowed and
     /// only the Baitler MCP tools are available to the spawned agent.
     pub allow_host_tools: bool,
-    /// Absolute host directories the user may grant a run **read-only** access to
-    /// (e.g. to import local files into Baitler). Empty (default) disables the
-    /// feature; a run's requested folder must resolve within one of these roots.
-    pub workspace_roots: Vec<String>,
     /// URL the spawned agent's loopback MCP config points at. Defaults to this
     /// process's own `/mcp` on loopback; overridable for split-host deploys.
     pub mcp_loopback_url: Option<String>,
@@ -139,7 +141,6 @@ impl Default for CliConfig {
             max_turns: 24,
             default_model: None,
             allow_host_tools: false,
-            workspace_roots: Vec::new(),
             mcp_loopback_url: None,
             minimax_api_key: None,
             minimax_base_url: MINIMAX_DEFAULT_BASE_URL.to_string(),
@@ -159,7 +160,6 @@ impl fmt::Debug for CliConfig {
             .field("max_turns", &self.max_turns)
             .field("default_model", &self.default_model)
             .field("allow_host_tools", &self.allow_host_tools)
-            .field("workspace_roots", &self.workspace_roots)
             .field("mcp_loopback_url", &self.mcp_loopback_url)
             .field(
                 "minimax_api_key",
@@ -331,17 +331,6 @@ impl Config {
                 .map_err(|raw| {
                     ConfigError::invalid("CLAUDE_CLI_ALLOW_HOST_TOOLS", raw, "expected a boolean")
                 })?,
-            // Colon- or comma-separated absolute dirs the user may grant to a run.
-            workspace_roots: env::var("CLAUDE_CLI_WORKSPACE_ROOTS")
-                .ok()
-                .map(|s| {
-                    s.split([':', ','])
-                        .map(str::trim)
-                        .filter(|p| !p.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
             mcp_loopback_url: non_empty(env::var("CLAUDE_CLI_MCP_URL").ok()),
             minimax_api_key: non_empty(env::var("MINIMAX_API_KEY").ok()),
             minimax_base_url: non_empty(env::var("MINIMAX_BASE_URL").ok())
@@ -350,6 +339,21 @@ impl Config {
             minimax_model: non_empty(env::var("MINIMAX_MODEL").ok())
                 .unwrap_or_else(|| MINIMAX_DEFAULT_MODEL.to_string()),
         };
+
+        // Colon- or comma-separated absolute host dirs Baitler may touch on the
+        // local disk (run grants, browse picker, MCP workspace_* tools). The
+        // legacy CLAUDE_CLI_WORKSPACE_ROOTS name still works as a fallback.
+        let workspace_roots = env::var("WORKSPACE_ROOTS")
+            .or_else(|_| env::var("CLAUDE_CLI_WORKSPACE_ROOTS"))
+            .ok()
+            .map(|s| {
+                s.split([':', ','])
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Key for encrypting stored secrets (e.g. LLM API keys). A dev default
         // keeps the app runnable, but it must be set in production.
@@ -373,6 +377,7 @@ impl Config {
             storage,
             mcp,
             cli,
+            workspace_roots,
             public_page_origin,
             secret_key,
         })
